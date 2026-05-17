@@ -84,14 +84,15 @@ def analyze_chart_content_node(state: ChartCheckState) -> Dict[str, Any]:
     if not image_path or not os.path.exists(image_path):
         return {"error": "차트 이미지 없음"}
 
+
     try:
-        img_b64 = _encode_image(image_path)
+        #img_b64 = _encode_image(image_path)
 
         messages = [
             SystemMessage(content="<|think|>당신은 데이터 시각화 분석 전문가입니다."),
             HumanMessage(content=[
                 # 이미지 먼저
-                {"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{img_b64}"}},
+                {"type": "image_url", "image_url": {"url": f"{image_path}"}},
                 # 텍스트 나중에
                 {"type": "text", "text": """차트 이미지를 보고 아래 항목을 하나씩 확인해서 JSON으로만 출력하세요. 다른 텍스트는 절대 포함하지 마세요.
 
@@ -150,7 +151,6 @@ def check_visual_errors_node(state: ChartCheckState) -> Dict[str, Any]:
         return { "visual_errors": []}
 
     try:
-        img_b64 = _encode_image(image_path)
 
         messages = [
             SystemMessage(content="<|think|>당신은 데이터 시각화 분석 전문가입니다."),
@@ -159,7 +159,7 @@ def check_visual_errors_node(state: ChartCheckState) -> Dict[str, Any]:
                 {
                     "type": "image_url",
                     "image_url": {
-                        "url": f"data:image/jpeg;base64,{img_b64}",
+                        "url": f"{image_path}",
                         "max_tokens": 1120  # OCR/축 읽기용 최고 품질
                     }
                 },
@@ -205,10 +205,19 @@ def check_visual_errors_node(state: ChartCheckState) -> Dict[str, Any]:
 def check_data_errors_node(state: ChartCheckState) -> Dict[str, Any]:
     """수치 오류 검사 (합계 불일치, 날짜 역전 등)"""
     description = state.chart_description
+    image_path = state.chart_image_path
 
     messages = [
         SystemMessage(content="<|think|>당신은 데이터 시각화 분석 전문가입니다."),
-        HumanMessage(content=f"""차트 분석 결과:
+        HumanMessage(content=[
+            {
+                "type": "image_url",
+                "image_url": {
+                    "url": f"{image_path}",
+                    "max_tokens": 1120  # OCR/축 읽기용 최고 품질
+                }
+            },
+            {"type": "text", "text": f"""차트 분석 결과:
     {description}
 
 
@@ -223,7 +232,7 @@ def check_data_errors_node(state: ChartCheckState) -> Dict[str, Any]:
     6. 기사 본문의 수치와 차트에 표시된 수치가 다른가? (수치 왜곡)
 
     발견된 오류만 JSON 배열로 출력하세요. 없으면 빈 배열 []. 최대 3개.
-    출력 형식: ["오류 유형: 구체적 설명"]""")
+    출력 형식: ["오류 유형: 구체적 설명"]"""}])
     ]
 
 
@@ -339,7 +348,7 @@ def main():
     app = build_graph()
 
     for i in range(4):
-        final_state = app.invoke(ChartCheckState(chart_image_path = f"C:/Users/toget/OneDrive/Desktop/NLP/ai_agent/test/test_image{i}.png"))
+        final_state = app.invoke(ChartCheckState(chart_image_path = f"./test/test_image{i}.png"))
         print(final_state["is_misleading"], "\n")
         print(final_state["verdict"], "\n")
         print(final_state["explanation"], "\n")
