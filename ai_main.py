@@ -73,7 +73,6 @@ _llm = ChatOllama(model="gemma4:e4b-it-q4_K_M", temperature=0.1, top_p=0.95, top
 #_llm = ChatOllama(model="gemma4:26b", temperature=0.1, top_p=0.95, top_k=64)
 llm = _llm.bind_tools([calculate])
 
-
 # ──────────────────────────────────────────
 # Node : Gemma 4 Vision으로 차트 내용 파악
 # ──────────────────────────────────────────
