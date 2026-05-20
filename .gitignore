@@ -11,3 +11,12 @@ __pycache__/
 
 #테스트 파일 무시
 test/
+
+#데이터 파일
+chart-detector/raw_data/
+
+#detector 용 환경
+.venv/
+
+#모델은 업로드 X
+.pth
