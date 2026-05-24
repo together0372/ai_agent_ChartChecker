@@ -347,7 +347,7 @@ def main():
     print("=======차트 분석 시작=========\n")
     app = build_graph()
 
-    for i in range(4):
+    for i in range(1):
         final_state = app.invoke(ChartCheckState(chart_image_path = f"./test/test_image{i}.png"))
         print(final_state["is_misleading"], "\n")
         print(final_state["verdict"], "\n")
