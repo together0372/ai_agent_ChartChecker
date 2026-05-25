@@ -1,17 +1,17 @@
-# CNN classifier (현재 사용)
-# torch CPU 전용 설치:
+# CNN classifier
+# CPU-only install:
 #   pip install torch torchvision --index-url https://download.pytorch.org/whl/cpu
 torch
 torchvision
-datasets
+pillow
 
 # Server
 fastapi
 uvicorn
+pydantic
 python-multipart
 requests
-pillow
 
-# Rule-based fallback (detector.py 사용 시에만 필요)
-# opencv-python
-# numpy
+# Rule-based detector (detector.py)
+opencv-python
+numpy
