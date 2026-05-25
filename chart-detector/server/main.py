@@ -30,6 +30,34 @@ class ImageRequest(BaseModel):
     url: str
     page: str
     site: str
+    title: str = ""
+
+
+def _slugify(text: str, maxlen: int = 60) -> str:
+    import re
+    text = re.sub(r'[\\/:*?"<>|]', "", text).strip()
+    text = re.sub(r"\s+", "_", text)
+    return text[:maxlen]
+
+
+def _article_folder(title: str, page: str) -> str:
+    from urllib.parse import urlparse, parse_qs
+    if title:
+        slug = _slugify(title)
+        if slug:
+            return slug
+    # title이 없거나 비면 URL에서 식별자 추출
+    parsed = urlparse(page)
+    # 쿼리스트링에서 기사 ID 키 탐색 (ncd, news_id, article_id, id 등)
+    for key in ("ncd", "news_id", "article_id", "id", "no"):
+        val = parse_qs(parsed.query).get(key)
+        if val:
+            return _slugify(val[0]) or "untitled"
+    # 경로 마지막 세그먼트
+    seg = [s for s in parsed.path.split("/") if s]
+    if seg:
+        return _slugify(seg[-1]) or "untitled"
+    return "untitled"
 
 
 def _download(url: str):
@@ -46,8 +74,9 @@ def _download(url: str):
         return None
 
 
-def _save(src: str, site: str) -> str:
-    dst_dir = os.path.join(SAVE_DIR, site.replace(".", "_"))
+def _save(src: str, site: str, title: str = "", page: str = "") -> str:
+    article = _article_folder(title, page)
+    dst_dir = os.path.join(SAVE_DIR, site.replace(".", "_"), article)
     os.makedirs(dst_dir, exist_ok=True)
     dst = os.path.join(dst_dir, os.path.basename(src))
     os.rename(src, dst)
@@ -73,27 +102,27 @@ def analyze(req: ImageRequest):
         return {"success": False, "error": "Failed to download image"}
 
     try:
-        # 1. CNN
         cnn_result = classify_image(path)
-        if cnn_result["is_chart"]:
-            saved = _save(path, req.site)
-            return {"success": True, "is_chart": True, "method": "cnn", "confidence": cnn_result["confidence"], "saved": saved}
-
-        # 2. Rule-based fallback
         rule_result = detect_from_file(path)
-        if rule_result.get("is_chart"):
-            saved = _save(path, req.site)
-            return {"success": True, "is_chart": True, "method": "rule", "score": rule_result["score"], "saved": saved}
+        
+        is_chart = cnn_result["is_chart"]   # CNN이 최종 결정
+        
+        if is_chart:
+            saved = _save(path, req.site, req.title, req.page)
+        else:
+            _discard(path)
+            saved = None
 
-        _discard(path)
         return {
             "success": True,
-            "is_chart": False,
+            "is_chart": is_chart,
             "cnn_confidence": cnn_result["confidence"],
             "rule_score": rule_result.get("score", 0),
+            "rule_is_chart": rule_result.get("is_chart", False),
+            "agree": cnn_result["is_chart"] == rule_result.get("is_chart", False),
+            "saved": saved,
         }
 
     except Exception as e:
         _discard(path)
-        print(f"[analyze] {e}")
         return {"success": False, "error": str(e)}

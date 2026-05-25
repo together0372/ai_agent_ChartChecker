@@ -4,6 +4,7 @@ import uuid
 import numpy as np
 import requests
 from typing import Dict, Tuple, Optional, Any
+from cnn import classify_image
 
 
 # =========================================================
@@ -281,58 +282,39 @@ def detect_from_file(path: str) -> Dict[str, Any]:
     }
 
 
-def analyze_chart(url: str, page: str, site: str) -> Dict[str, Any]:
+def analyze_chart(url: str, page: str, site: str):
     try:
         path = download_image(url)
         if not path:
             return {"success": False, "error": "Failed to download image"}
 
+        # 크기 체크
         image = load_image(path)
         if image is None:
+            _discard(path)
             return {"success": False, "error": "Failed to load image"}
-
         h, w = image.shape[:2]
         if w < 300 or h < 180:
             _discard(path)
             return {"success": True, "is_chart": False, "reason": "Image too small"}
 
-        gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
+        # CNN 추론
+        result = classify_image(path)
 
-        edges = detect_edges(gray)
-        horizontal, vertical = detect_chart_lines(edges)
-        rect_count = detect_bar_chart(gray)
-
-        # pie detection before early exit to avoid missing pie-only charts
-        pie_count = 0
-        if rect_count < 2:
-            pie_count = detect_pie_chart(gray)
-
-        # only early-exit when absolutely no visual structure exists
-        if horizontal == 0 and vertical == 0 and rect_count == 0 and pie_count == 0:
-            _discard(path)
-            return {"success": True, "is_chart": False, "reason": "No visual structure detected"}
-
-        text = detect_text(gray)
-        num_ratio = numeric_ratio(text)
-        score = calculate_chart_score(text, horizontal, vertical, rect_count, pie_count, num_ratio)
-
-        is_chart = score >= 3
-
-        if is_chart:
+        if result["is_chart"]:
             saved = save_chart(path, site)
             return {
                 "success": True,
                 "is_chart": True,
+                "confidence": result["confidence"],
                 "saved": saved,
-                "score": score,
             }
 
         _discard(path)
         return {
             "success": True,
             "is_chart": False,
-            "score": score,
-            "reason": f"Score {score} below threshold (3)",
+            "confidence": result["confidence"],
         }
 
     except Exception as e:

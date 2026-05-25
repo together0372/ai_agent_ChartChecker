@@ -15,7 +15,8 @@ async function sendToServer(imageUrl) {
         data: {
             url: imageUrl,
             page: location.href,
-            site: location.hostname
+            site: location.hostname,
+            title: document.title
         }
     }, (response) => {
         console.log("분석 결과:", response);
