@@ -18,5 +18,7 @@ chart-detector/raw_data/
 #detector 용 환경
 .venv/
 
-#모델은 업로드 X
-.pth
+# 수집된 이미지 (저작권)
+chart-detector/server/downloads/
+chart-detector/server/temp/
+chart-detector/server/results.html
