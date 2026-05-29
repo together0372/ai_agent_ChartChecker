@@ -1,15 +1,17 @@
-# Server
-fastapi
-uvicorn
-python-multipart
-requests
-
 # CNN classifier
-# torch CPU: pip install torch torchvision --index-url https://download.pytorch.org/whl/cpu
+# CPU-only install:
+#   pip install torch torchvision --index-url https://download.pytorch.org/whl/cpu
 torch
 torchvision
 pillow
 
-# Rule-based detector
+# Server
+fastapi
+uvicorn
+pydantic
+python-multipart
+requests
+
+# Rule-based detector (detector.py)
 opencv-python
 numpy

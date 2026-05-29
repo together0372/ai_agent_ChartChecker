@@ -9,7 +9,7 @@ import torch.nn as nn
 from torchvision import models, transforms
 from PIL import Image
 
-THRESHOLD  = 0.35
+THRESHOLD  = 0.45
 MODEL_PATH = Path(__file__).parent / "model" / "chart_classifier.pth"
 TEMP_DIR   = "temp"
 SAVE_DIR   = "downloads"

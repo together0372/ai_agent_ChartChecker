@@ -14,20 +14,115 @@ async function sendToServer(imageUrl) {
         action: "analyze",
         data: {
             url: imageUrl,
-            page: document.title,
-            site: location.hostname
+            page: location.href,
+            site: location.hostname,
+            title: document.title
         }
     }, (response) => {
         console.log("분석 결과:", response);
     });
 }
 
-function collectImages() {
-    const imgs = document.querySelectorAll(
-        "article img, .article img, #container img"
+function isSvgChart(img, url) {
+    return (
+        url.includes(".svg") ||
+        img.closest("svg")
     );
+}
+
+function hasChartContext(img) {
+
+    const container =
+        img.closest("figure") ||
+        img.parentElement;
+
+    if (!container) return false;
+
+    const text = container.innerText.toLowerCase();
+
+    const keywords = [
+        "chart",
+        "graph",
+        "data",
+        "statistics",
+        "%",
+        "survey",
+        "increase",
+        "decrease",
+        "source"
+    ];
+
+    return keywords.some(word =>
+        text.includes(word)
+    );
+}
+
+function isInsideBadContainer(img) {
+    return img.closest(
+        ".ad, .ads, .advertisement, .banner, .sidebar, " +
+        ".recommended, .related, .outbrain, .taboola, " +
+        ".promo, .thumbnail, nav, aside, footer, header"
+    );
+}
+
+function looksLikeAd(url) {
+    const lower = url.toLowerCase();
+
+    return [
+        "ads",
+        "advertisement",
+        "banner",
+        "promo",
+        "sponsor",
+        "thumbnail",
+        "icon",
+        "logo"
+    ].some(word => lower.includes(word));
+}
+
+function isTooSmall(img) {
+    const area = img.naturalWidth * img.naturalHeight;
+
+    return (
+        img.naturalWidth < 400 ||
+        img.naturalHeight < 250 ||
+        area < 180000
+    );
+}
+
+function isDisplayedTooSmall(img) {
+    return (
+        img.clientWidth < 250 ||
+        img.clientHeight < 150
+    );
+}
+
+function hasBadAspectRatio(img) {
+    const ratio = img.naturalWidth / img.naturalHeight;
+
+    return (
+        ratio > 4.5 || ratio < 0.45
+    );
+}
+
+function collectImages() {
+
+    // Find the actual article body first
+    const article =
+        document.querySelector("article") ||
+        document.querySelector('[role="main"]') ||
+        document.querySelector(".article-body");
+
+    if (!article) return;
+
+    // Only search inside article
+    const imgs = article.querySelectorAll("img");
 
     imgs.forEach(img => {
+
+        // Remove ads / sidebars / recommended sections
+        if (isInsideBadContainer(img)) return;
+
         const src =
             img.src ||
             img.dataset.src ||
@@ -36,18 +131,30 @@ function collectImages() {
         if (!src) return;
 
         const normalized = normalizeUrl(src);
+
         if (!normalized) return;
+
+        if (!hasChartContext(img)) return;
 
         if (!isValidImage(normalized)) return;
 
         if (observed.has(normalized)) return;
 
-        if (img.naturalWidth < 400) return;
-        if (img.naturalHeight < 250) return;
+        if (isInsideBadContainer(img)) return;
+
+        if (!img.complete || img.naturalWidth === 0) return;
+
+        if (isTooSmall(img)) return;
+
+        if (isDisplayedTooSmall(img)) return;
+
+        if (hasBadAspectRatio(img)) return;
+
+        if (looksLikeAd(normalized)) return;
 
         observed.add(normalized);
 
-        console.log("이미지 발견:", normalized);
+        console.log("차트 후보 이미지:", normalized);
         sendToServer(normalized);
     });
 }
@@ -65,7 +172,11 @@ function main() {
     collectImages();
 
     const observer = new MutationObserver(() => {
+    clearTimeout(window.__chartObserverTimeout);
+
+    window.__chartObserverTimeout = setTimeout(() => {
         collectImages();
+    }, 300);
     });
 
     observer.observe(document.body, {
@@ -73,8 +184,14 @@ function main() {
         subtree: true
     });
 
+    let scrollTimeout;
+
     window.addEventListener("scroll", () => {
-        collectImages();
+        clearTimeout(scrollTimeout);
+
+        scrollTimeout = setTimeout(() => {
+            collectImages();
+        }, 300);
     });
 }
 
