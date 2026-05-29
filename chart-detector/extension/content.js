@@ -14,7 +14,7 @@ async function sendToServer(imageUrl) {
         action: "analyze",
         data: {
             url: imageUrl,
-            page: location.href,
+            page: document.title,
             site: location.hostname
         }
     }, (response) => {

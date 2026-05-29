@@ -225,8 +225,9 @@ def calculate_chart_score(
 # Save Detected Chart Image
 # =========================================================
 
-def save_chart(src_path: str, site: str) -> str:
-    site_dir = os.path.join(SAVE_DIR, site.replace(".", "_"))
+def save_chart(src_path: str, site: str, page: str) -> str:
+    page_safe = "".join(c for c in page if c.isalnum() or c in "-_")[:50]
+    site_dir = os.path.join(SAVE_DIR, site.replace(".", "_"), page_safe)
     os.makedirs(site_dir, exist_ok=True)
 
     dst = os.path.join(site_dir, os.path.basename(src_path))
@@ -319,7 +320,7 @@ def analyze_chart(url: str, page: str, site: str) -> Dict[str, Any]:
         is_chart = score >= 3
 
         if is_chart:
-            saved = save_chart(path, site)
+            saved = save_chart(path, site, page)
             return {
                 "success": True,
                 "is_chart": True,

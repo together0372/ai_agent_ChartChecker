@@ -20,3 +20,7 @@ chart-detector/raw_data/
 
 #모델은 업로드 X
 .pth
+
+#서버 임시 파일
+chart-detector/server/downloads/
+chart-detector/server/temp/

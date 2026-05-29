@@ -61,8 +61,9 @@ def _download_image(url: str) -> Optional[str]:
         return None
 
 
-def _save_chart(src: str, site: str) -> str:
-    dst_dir = os.path.join(SAVE_DIR, site.replace(".", "_"))
+def _save_chart(src: str, site: str, page: str) -> str:
+    page_safe = "".join(c for c in page if c.isalnum() or c in "-_")[:50]
+    dst_dir = os.path.join(SAVE_DIR, site.replace(".", "_"), page_safe)
     os.makedirs(dst_dir, exist_ok=True)
     dst = os.path.join(dst_dir, os.path.basename(src))
     os.rename(src, dst)
@@ -104,7 +105,7 @@ def analyze_chart(url: str, page: str, site: str) -> Dict[str, Any]:
         result = classify_image(path)
 
         if result["is_chart"]:
-            saved = _save_chart(path, site)
+            saved = _save_chart(path, site, page)
             return {"success": True, "is_chart": True, "saved": saved, "confidence": result["confidence"]}
 
         _discard(path)

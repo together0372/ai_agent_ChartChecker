@@ -46,8 +46,9 @@ def _download(url: str):
         return None
 
 
-def _save(src: str, site: str) -> str:
-    dst_dir = os.path.join(SAVE_DIR, site.replace(".", "_"))
+def _save(src: str, site: str, page: str) -> str:
+    page_safe = "".join(c for c in page if c.isalnum() or c in "-_")[:50]
+    dst_dir = os.path.join(SAVE_DIR, site.replace(".", "_"), page_safe)
     os.makedirs(dst_dir, exist_ok=True)
     dst = os.path.join(dst_dir, os.path.basename(src))
     os.rename(src, dst)
@@ -76,13 +77,13 @@ def analyze(req: ImageRequest):
         # 1. CNN
         cnn_result = classify_image(path)
         if cnn_result["is_chart"]:
-            saved = _save(path, req.site)
+            saved = _save(path, req.site, req.page)
             return {"success": True, "is_chart": True, "method": "cnn", "confidence": cnn_result["confidence"], "saved": saved}
 
         # 2. Rule-based fallback
         rule_result = detect_from_file(path)
         if rule_result.get("is_chart"):
-            saved = _save(path, req.site)
+            saved = _save(path, req.site, req.page)
             return {"success": True, "is_chart": True, "method": "rule", "score": rule_result["score"], "saved": saved}
 
         _discard(path)
