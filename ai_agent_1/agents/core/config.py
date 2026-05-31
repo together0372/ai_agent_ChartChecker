@@ -52,7 +52,7 @@ MISVIZ_CONTENT_SCHEMA = "v2-taxonomy-enriched"
 #                              area_distortion, distorted_projection, 3d_effect
 #   D. 데이터 선택 조작 (4): cherry_picking, inappropriate_order,
 #                              inconsistent_binning, cropped_visual_context
-#   E. 차트 유형 오용 (4): inappropriate_pie, inappropriate_line,
+#   E. 차트 유형 오용 (3): inappropriate_line,
 #                           discretized_continuous, stacked_chart_misuse
 #   F. 강조 조작 (3)  : selective_emphasis, misleading_color, manipulated_annotation
 #   G. 정보 은폐 (4)  : missing_label, hidden_uncertainty,
@@ -242,17 +242,6 @@ MISLEADER_TAXONOMY: dict[str, dict] = {
     },
 
     # ── E. 차트 유형 오용 ────────────────────────────────
-    "inappropriate_pie": {
-        "name": "부적절한 파이차트 (Inappropriate Pie Chart)",
-        "desc": "① 합이 100%가 아닌 데이터에 파이차트 사용 "
-                "② 음수 포함 ③ 범주가 너무 많아(7개 이상) 해석 불가 "
-                "④ 부분-전체 관계가 아닌 데이터.",
-        "detection": "퍼센트 합 확인: 95~105% 범위 이탈 시 오류. "
-                     "도구: tool_check_pie_sum(percentages), tool_check_pie_angles",
-        "example": "설문 복수응답 결과(합=150%)를 파이차트로 표시",
-        "chart_types": ["파이차트", "도넛차트"],
-        "severity_weight": 0.85,
-    },
     "inappropriate_line": {
         "name": "부적절한 선차트 (Inappropriate Line Chart)",
         "desc": "연속성이 없는 범주형·이산형 데이터에 꺾은선 그래프 사용. "
@@ -384,6 +373,31 @@ MISLEADER_TAXONOMY: dict[str, dict] = {
         "chart_types": ["픽토그램", "인포그래픽"],
         "severity_weight": 0.75,
     },
+
+    # ── G. 기울기·주석 왜곡 ──────────────────────────────
+    "slope_distortion": {
+        "name": "기울기 왜곡 (Slope Distortion)",
+        "desc": "선 차트에서 실제 데이터 변화량과 시각적 기울기가 불일치. "
+                "더 작은 변화 구간이 더 큰 변화 구간보다 가파르게 그려져 "
+                "추세 둔화를 가속처럼 보이게 하거나 그 반대로 표현.",
+        "detection": "각 구간의 픽셀-값 비율(px/unit)이 일정한지 확인. "
+                     "비율 편차가 25% 이상이면 왜곡으로 판정.",
+        "example": "7→8월: 4.1pp 감소인데 시각적으로 완만, "
+                   "8→9월: 3.5pp 감소인데 시각적으로 더 가파르게 표현 → 둔화를 가속으로 오도",
+        "chart_types": ["선차트", "영역차트"],
+        "severity_weight": 0.80,
+    },
+    "misleading_annotation": {
+        "name": "주석 왜곡 (Misleading Annotation)",
+        "desc": "차트에 추가된 화살표·괄호·강조선 등 주석이 실제 변화량을 "
+                "왜곡하거나 더 작은 변화를 더 극적으로 강조하여 오해 유발.",
+        "detection": "주석에 표시된 숫자와 실제 변화량 불일치, "
+                     "또는 작은 변화에 더 강한 시각적 강조가 붙어 있는 경우.",
+        "example": "4.1 감소보다 3.5 감소에 더 굵은 빨간 화살표를 달아 "
+                   "감소폭이 커지는 것처럼 오도",
+        "chart_types": ["선차트", "막대차트", "영역차트"],
+        "severity_weight": 0.75,
+    },
 }
 
 MISLEADER_KEYS: set[str] = set(MISLEADER_TAXONOMY.keys())
@@ -398,8 +412,6 @@ MISVIZ_LABEL_TO_KEY: dict[str, str] = {
     "3d_effect":                       "3d_effect",
     "truncated_axis":                  "truncated_axis",
     "truncated_y_axis":                "truncated_axis",
-    "inappropriate_use_of_pie_chart":  "inappropriate_pie",
-    "inappropriate_pie":               "inappropriate_pie",
     "inconsistent_tick_intervals":     "inconsistent_tick",
     "inconsistent_tick":               "inconsistent_tick",
     "dual_axis":                       "dual_axis",
@@ -483,12 +495,7 @@ FEW_SHOT_EXAMPLES = """
      계절적 상관관계를 인과관계처럼 연출 → false_correlation.
 결론: ["dual_axis", "false_correlation"]
 
-【예시 4 — 파이차트 합 초과 + 레이블 누락】
-차트: 파이차트. A(45%), B(38%), C(29%). 단위 없음.
-분석: 45+38+29=112% → inappropriate_pie. 단위/출처 없음 → missing_label.
-결론: ["inappropriate_pie", "missing_label"]
-
-【예시 5 — 역전 축 (Florida 총기 사례)】
+【예시 4 — 역전 축 (Florida 총기 사례)】
 차트: 막대그래프. Y축 위=0, 아래로 갈수록 증가(0→1000). 2005년 이후 막대가 아래로 길어짐.
 분석: Y축이 아래로 갈수록 커짐 → inverted_axis. 총기법 시행 후 사망 급증이 감소처럼 보임.
 결론: ["inverted_axis"]
@@ -543,9 +550,6 @@ MISVIZ_EXAMPLES = [
     {"id": "mv003", "misleaders": ["3d_effect"],
      "description": "3D pie chart where front slices appear larger due to perspective.",
      "chart_type": "pie chart"},
-    {"id": "mv004", "misleaders": ["inappropriate_pie"],
-     "description": "Pie chart where all segments sum to 127% (from multiple-choice survey).",
-     "chart_type": "pie chart"},
     {"id": "mv005", "misleaders": ["dual_axis"],
      "description": "Line chart with two Y-axes scaled to manufacture apparent correlation between unrelated variables.",
      "chart_type": "line chart"},
@@ -576,8 +580,8 @@ MISVIZ_EXAMPLES = [
     {"id": "mv014", "misleaders": ["truncated_axis", "data_visual_disproportion"],
      "description": "Bar chart Y-axis starts at 83: 1.2% actual difference appears as 2.5x visual ratio.",
      "chart_type": "bar chart"},
-    {"id": "mv015", "misleaders": ["inappropriate_pie", "misrepresentation"],
-     "description": "Pie chart: segments sum to 112% and visual angles don't match the percentages.",
+    {"id": "mv015", "misleaders": ["misrepresentation"],
+     "description": "Pie chart: visual angles don't match the percentages.",
      "chart_type": "pie chart"},
     {"id": "mv016", "misleaders": ["inconsistent_binning"],
      "description": "Histogram with bin widths 10, 10, 30, 50 shown at equal visual width.",

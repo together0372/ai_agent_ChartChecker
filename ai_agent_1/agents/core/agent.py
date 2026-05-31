@@ -2,17 +2,20 @@
 DistortionDetectorAgent — LangGraph 기반 차트 오류 감지 멀티에이전트
 
 그래프:
-  observer_start → observer_llm ⇄ observer_tools → observer_finalize
+  [Observer 3단계]
+  observer_analyze (1단계: 분석, 도구없음)
+  → observer_mandatory_tools (2단계: 차트유형별 필수도구 자동실행)
+  → observer_llm ⇄ observer_tools (3단계: 가설기반 ReAct)
+  → observer_finalize
   → math (비전 추출 + LLM 루프 + 직접 수학도구)
-  → debate_adv → debate_obs_llm ⇄ debate_obs_tools → debate_synthesize [3라운드]
-  → self_critique
-  → judge → [recheck] → reporter → confidence → END
+  → debate_adv → debate_obs_llm ⇄ debate_obs_tools → debate_synthesize [1라운드]
+  → self_critique → [recheck] → reporter → confidence → END
 
 핵심 설계:
-  - 수학(math)을 토론 앞으로 이동 → extracted_numbers 채워진 후 debate 시작
-  - 토론 Observer: 전체 ReAct 루프 (이미지 재확인 + 도구 직접 호출)
-  - 관찰자에 차트 유형별 심층 체크리스트 내장
-  - self_critique: 보수적 기준 (명확한 반박 증거 있을 때만 제거)
+  - Observer 3단계: 분석→필수도구→가설검증 ReAct
+  - 1단계: 도구없이 차트 메시지·의심요소 파악, "속이는 사람" 관점 가설 도출
+  - 2단계: 차트 유형별 필수 도구 LLM 판단 없이 자동 실행
+  - 3단계: 가설 기반 추가 검증, 도구 결과마다 해석 텍스트 출력
   - use_rag: RAG 선택적 사용
 """
 from __future__ import annotations
@@ -67,6 +70,11 @@ class AgentState(TypedDict):
     observer_tool_call_count: int
     self_critique_removed:    list[str]
 
+    # Observer 3단계 분리용
+    observer_analysis:   str        # 1단계: 차트 분석 + 가설 텍스트
+    observer_hypotheses: list[str]  # 1단계: 의심 misleader 키 목록
+    mandatory_tool_results: dict    # 2단계: 필수 도구 실행 결과
+
     # 토론 상태
     debate_round:          int
     debate_history:        list[dict]
@@ -97,10 +105,35 @@ class AgentState(TypedDict):
 # ─────────────────────────────────────────────────────────
 # 상수
 # ─────────────────────────────────────────────────────────
-MAX_OBSERVER_ROUNDS  = 8   # Observer ReAct 최대 도구 호출
-MAX_DEBATE_ROUNDS    = 1   # 토론 최대 라운드
+MAX_OBSERVER_ROUNDS  = 6   # Observer ReAct 최대 도구 호출 (가설 기반이라 줄임)
+MAX_DEBATE_ROUNDS    = 2   # 토론 최대 라운드
 MAX_DEBATE_OBS_TOOLS = 6   # 토론 내 Observer 도구 호출 최대
 MAX_MATH_LLM_LOOPS   = 4   # 수학 LLM 도구 루프 최대
+
+# 차트 유형별 필수 도구 (2단계에서 자동 실행)
+# 값: [(도구명, 인자 추출 함수용 키)]
+MANDATORY_TOOLS_BY_TYPE: dict[str, list[str]] = {
+    # 영어 키
+    "bar":               ["tool_check_axis_truncation", "tool_check_label_value_match", "tool_check_baseline_alignment"],
+    "bidirectional_bar": ["tool_check_axis_truncation", "tool_check_bar_scale_symmetry"],
+    "pie":               ["tool_check_multi_pie_sum", "tool_check_pie_angles"],
+    "donut":             ["tool_check_multi_pie_sum", "tool_check_selective_annotation"],
+    "line":              ["tool_check_axis_truncation", "tool_check_tick_intervals", "tool_check_slope_distortion"],
+    "area":              ["tool_check_axis_truncation", "tool_check_tick_intervals"],
+    "histogram":         ["tool_check_axis_truncation", "tool_check_bin_widths"],
+    "scatter":           ["tool_check_area_distortion"],
+    "bubble":            ["tool_check_area_distortion"],
+    # 한국어 키 (normalize_chart_type 변환 결과)
+    "막대차트":           ["tool_check_axis_truncation", "tool_check_label_value_match", "tool_check_baseline_alignment"],
+    "양방향막대차트":      ["tool_check_axis_truncation", "tool_check_bar_scale_symmetry"],
+    "파이차트":           ["tool_check_multi_pie_sum", "tool_check_pie_angles"],
+    "도넛차트":           ["tool_check_multi_pie_sum", "tool_check_selective_annotation"],
+    "선차트":             ["tool_check_axis_truncation", "tool_check_tick_intervals", "tool_check_slope_distortion"],
+    "영역차트":           ["tool_check_axis_truncation", "tool_check_tick_intervals"],
+    "히스토그램":         ["tool_check_axis_truncation", "tool_check_bin_widths"],
+    "산점도":             ["tool_check_area_distortion"],
+    "버블차트":           ["tool_check_area_distortion"],
+}
 
 
 # ─────────────────────────────────────────────────────────
@@ -120,6 +153,7 @@ class DistortionDetectorAgent:
             "chart_type": "", "image_description": "", "initial_observations": "",
             "suspected_misleaders": [], "tool_evidence": {},
             "observer_tool_call_count": 0, "self_critique_removed": [],
+            "observer_analysis": "", "observer_hypotheses": [], "mandatory_tool_results": {},
             "debate_round": 0, "debate_history": [],
             "debate_obs_messages": [], "debate_adv_claims": [],
             "debate_final_suspects": [], "debate_no_progress": False,
@@ -140,11 +174,12 @@ class DistortionDetectorAgent:
     def _build_graph(self):
         g = StateGraph(AgentState)
 
-        # Observer ReAct
-        g.add_node("observer_start",    self._node_observer_start)
-        g.add_node("observer_llm",      self._node_observer_llm)
-        g.add_node("observer_tools",    self._node_observer_tools)
-        g.add_node("observer_finalize", self._node_observer_finalize)
+        # Observer 3단계
+        g.add_node("observer_analyze",         self._node_observer_analyze)         # 1단계: 분석
+        g.add_node("observer_mandatory_tools", self._node_observer_mandatory_tools) # 2단계: 필수도구
+        g.add_node("observer_llm",             self._node_observer_llm)             # 3단계: ReAct LLM
+        g.add_node("observer_tools",           self._node_observer_tools)           # 3단계: ReAct 도구실행
+        g.add_node("observer_finalize",        self._node_observer_finalize)        # 결과 추출
 
         # Math (토론 전 실행 — extracted_numbers 확보)
         g.add_node("math",              self._node_math_verifier)
@@ -161,9 +196,10 @@ class DistortionDetectorAgent:
         g.add_node("reporter",          self._node_reporter)
         g.add_node("confidence",        self._node_confidence_scorer)
 
-        # Observer 흐름
-        g.add_edge(START, "observer_start")
-        g.add_edge("observer_start", "observer_llm")
+        # Observer 흐름 (3단계)
+        g.add_edge(START,                      "observer_analyze")
+        g.add_edge("observer_analyze",         "observer_mandatory_tools")
+        g.add_edge("observer_mandatory_tools", "observer_llm")
         g.add_conditional_edges("observer_llm", self._observer_route,
                                 {"tools": "observer_tools", "done": "observer_finalize"})
         g.add_edge("observer_tools",    "observer_llm")
@@ -239,86 +275,265 @@ class DistortionDetectorAgent:
                 if t.name not in ("tool_query_misviz_db", "tool_search_misleader_evidence")]
 
     # ─────────────────────────────────────────────────────
-    # Observer — 초기화
+    # Observer — 1단계: 분석 (도구 없음)
     # ─────────────────────────────────────────────────────
 
-    async def _node_observer_start(self, state: AgentState) -> AgentState:
-        print("\n  🔍 관찰자 에이전트 — 사기 수사관 모드...")
+    async def _node_observer_analyze(self, state: AgentState) -> AgentState:
+        """
+        도구를 전혀 사용하지 않고 차트를 읽어 분석.
+        - 차트가 전달하려는 메시지 파악
+        - 시각적 이상 요소 관찰
+        - "내가 속이는 사람이라면?" 관점으로 가설 도출
+        결과를 observer_analysis / observer_hypotheses 에 저장.
+        """
+        print("\n  🔍 관찰자 에이전트 — [1단계] 차트 분석 중...")
 
-        from PIL import Image
-        img_info: dict = {}
-        try:
-            with Image.open(state["image_path"]) as img:
-                img_info = {"w": img.size[0], "h": img.size[1]}
-        except Exception:
-            pass
-
-        img_b64  = await asyncio.to_thread(image_to_base64, state["image_path"])
-        use_rag  = state.get("use_rag", True)
-        rag_line = (
-            "⚠️ MANDATORY FIRST STEP: Call tool_query_misviz_db with your chart description BEFORE any other tool.\n"
-            "This searches the MisViz database of known deceptive charts and MUST be called first.\n"
-        ) if use_rag else ""
+        img_b64 = await asyncio.to_thread(image_to_base64, state["image_path"])
 
         system = textwrap.dedent(f"""
-You are a chart manipulation detector. Call tools to find deceptions. Do NOT write analysis text — use tools.
+You are a chart fraud investigator. Your job is to ANALYZE the chart — do NOT call any tools yet.
 
-{rag_line}
-## STEP 1 — Call tools immediately. Required tools by chart type:
+## Your task:
+1. READ the chart carefully: every number, label, axis, color, annotation
+2. UNDERSTAND the message: what is this chart trying to make readers believe?
+3. THINK like a deceiver: if YOU made this chart to mislead, what tricks would you use?
+4. LIST your hypotheses: which specific deception techniques might be present?
 
-BAR chart:
-- tool_check_axis_truncation(y_min, y_max, data_min)
-- tool_check_label_value_match(label_values, visual_ratios, y_min, y_max)
-- tool_check_color_emphasis_bias(highlighted_indices, all_values)
-- tool_check_selective_annotation(annotated_indices, all_values)
-- tool_check_baseline_alignment(bar_start_values)
-- If bars go LEFT and RIGHT from center: tool_check_bar_scale_symmetry(left_values, left_px, right_values, right_px)
-  where left_px/right_px = estimated bar length as 0.0–1.0 fraction of chart half-width
-
-PIE/DONUT chart:
-- tool_check_pie_sum(percentages)
-- tool_check_pie_angles(pie_pcts, pie_angles_deg)
-- tool_check_selective_annotation(annotated_indices=[index of prominently shown number], all_values=[all slice %s])
-  CRITICAL: if the big displayed number is NOT the largest slice → selective_emphasis
-
-LINE chart:
-- tool_check_axis_truncation(y_min, y_max, data_min)
-- tool_check_tick_intervals(ticks)
-- tool_check_data_gap(shown_x_values)
-- tool_check_dual_axis(left_axis_range, right_axis_range, description)
-- tool_check_aspect_ratio(width_px, height_px, x_data_range, y_data_range)
-
-ANY chart:
-- tool_check_log_scale(ticks) if ticks look exponential
-- tool_check_item_order(labels) if X-axis has dates/years
-- tool_check_area_distortion(values, visual_areas) for bubble charts
-- tool_check_bin_widths(bin_edges, visual_widths_px) for histograms
-
-## STEP 2 — After calling AT LEAST 5 tools, output ONLY this JSON:
-```json
+## Output ONLY this JSON:
 {{
-  "chart_type": "bar|line|pie|scatter|histogram|bidirectional_bar|donut",
-  "image_description": "all numbers, labels, colors seen",
-  "suspected_misleaders": ["key1", "key2"],
-  "tool_evidence": {{"tool_name": "result summary"}}
+  "chart_type": "bar|line|pie|donut|scatter|bubble|histogram|bidirectional_bar|area|other",
+  "chart_message": "one sentence: what conclusion does this chart push readers toward?",
+  "all_numbers": "every number visible: axis values, labels, percentages, annotations",
+  "visual_anomalies": ["anomaly 1", "anomaly 2"],
+  "deception_hypotheses": [
+    {{"misleader_key": "truncated_axis", "reason": "Y-axis starts at 60, not 0 — gap looks huge"}},
+    {{"misleader_key": "selective_emphasis", "reason": "only one bar is red while others are gray"}}
+  ]
 }}
-```
 
-## MISLEADER KEYS:
+## MISLEADER KEYS to choose from:
 {', '.join(sorted(MISLEADER_KEYS))}
-
-RULE: Call tools first. Output JSON only after ≥5 tool calls.
 """).strip()
 
-        human_msg = HumanMessage(content=[
-            {"type": "text", "text": (
-                f"Chart size: {img_info.get('w','?')}×{img_info.get('h','?')}px. "
-                "Call tools to check for manipulation. Start calling tools now."
-            )},
-            {"type": "image_url", "image_url": {"url": f"data:image/png;base64,{img_b64}"}},
-        ])
+        raw = await asyncio.to_thread(
+            call_vision_llm,
+            "Analyze this chart for potential deception. What is it trying to make you believe? What tricks might be used?",
+            state["image_path"],
+            system,
+            1200,
+            0.1,
+            False,   # use_thinking=False — JSON 출력 보장
+        )
 
-        return {"observer_messages": [SystemMessage(content=system), human_msg]}
+        parsed = parse_json(raw)
+        if parsed:
+            chart_type  = normalize_chart_type(parsed.get("chart_type", ""))
+            hypotheses  = [
+                h["misleader_key"]
+                for h in parsed.get("deception_hypotheses", [])
+                if h.get("misleader_key") in MISLEADER_KEYS
+            ]
+            print(f"     차트 유형: {chart_type}")
+            print(f"     메시지: {parsed.get('chart_message', '')[:80]}")
+            print(f"     이상 요소: {parsed.get('visual_anomalies', [])}")
+            print(f"     의심 가설: {hypotheses}")
+        else:
+            chart_type = ""
+            hypotheses = []
+            print(f"     ⚠️ 분석 JSON 파싱 실패 → 원문 사용")
+            print(f"     [DEBUG 원문 처음 300자]\n{raw[:300]}\n     [/DEBUG]")
+
+        # ── RAG 조기 조회 (가설 기반 쿼리 → 3단계 도구 선택에 활용) ──────
+        similar: list[dict] = []
+        rag_hint_text = ""
+        if state.get("use_rag", True) and (chart_type or hypotheses):
+            try:
+                # chart_type + 가설 키워드를 합쳐 정확한 쿼리 생성
+                rag_query = " ".join(filter(None, [chart_type] + hypotheses))
+                similar = await asyncio.to_thread(query_vector_db, rag_query, 3)
+                rag_hint_text = await asyncio.to_thread(format_rag_hint, rag_query, 8)
+                if similar:
+                    print(f"     📚 RAG 유사사례 {len(similar)}건 (가설 기반 조기 로드)")
+            except Exception as e:
+                print(f"     ⚠️ RAG 건너뜀: {e}")
+
+        return {
+            **state,
+            "chart_type":          chart_type,
+            "observer_analysis":   raw,
+            "observer_hypotheses": hypotheses,
+            "similar_examples":    similar,
+            "rag_hint":            rag_hint_text,
+        }
+
+    # ─────────────────────────────────────────────────────
+    # Observer — 2단계: 필수 도구 자동 실행
+    # ─────────────────────────────────────────────────────
+
+    async def _node_observer_mandatory_tools(self, state: AgentState) -> AgentState:
+        """
+        차트 유형에 따라 반드시 실행해야 할 도구를 LLM 판단 없이 자동 실행.
+        수치는 math_verifier가 추출한 extracted_numbers를 활용하되,
+        아직 math 단계 전이므로 이미지에서 미리 숫자를 추출해서 사용.
+        결과는 mandatory_tool_results 와 tool_evidence에 저장.
+        """
+        chart_type = state.get("chart_type", "")
+        norm_type  = normalize_chart_type(chart_type)
+        tools_to_run = MANDATORY_TOOLS_BY_TYPE.get(norm_type, [])
+
+        print(f"\n  🔧 관찰자 에이전트 — [2단계] 필수 도구 실행 ({norm_type}: {len(tools_to_run)}개)...")
+
+        if not tools_to_run:
+            print(f"     차트 유형 '{norm_type}' 필수 도구 없음 → 건너뜀")
+            return state
+
+        # 숫자 추출 (간략 버전 — math 노드보다 앞에 있으므로 별도 추출)
+        extract_sys = textwrap.dedent("""
+Extract all numeric data from this chart. Output ONLY JSON:
+{
+  "y_min": null, "y_max": null, "y_ticks": [],
+  "data_values": [], "visual_ratios": [], "bar_start_values": [],
+  "pie_pcts": [], "pie_angles_deg": [],
+  "x_labels": [], "annotated_indices": [], "highlighted_indices": [],
+  "left_bar_values": [], "left_bar_px": [],
+  "right_bar_values": [], "right_bar_px": [],
+  "visual_areas": [], "bin_edges": [], "visual_bin_widths_px": [],
+  "chart_width_px": null, "chart_height_px": null,
+  "visual_y_px": []
+}
+
+For line charts, estimate each data point's Y pixel position (top=0).
+Example: if chart height is 300px and a point is 1/3 from top, visual_y_px=100.
+""").strip()
+
+        nums: dict = {}
+        try:
+            raw_nums = await asyncio.to_thread(
+                call_vision_llm, "Extract all numbers.", state["image_path"],
+                extract_sys, 800, 0.0, False,   # use_thinking=False
+            )
+            parsed_nums = parse_json(raw_nums)
+            if parsed_nums:
+                nums = parsed_nums
+        except Exception as e:
+            print(f"     ⚠️ 숫자 추출 실패: {e}")
+
+        def _get(key, default=None):
+            v = nums.get(key)
+            return v if v is not None else default
+
+        # 도구별 인자 매핑
+        def _build_args(tool_name: str) -> dict | None:
+            if tool_name == "tool_check_axis_truncation":
+                y_min = _get("y_min", 0)
+                y_max = _get("y_max", 100)
+                d_min = min(_get("data_values", [y_min or 0]) or [0])
+                return {"y_min": y_min, "y_max": y_max, "data_min": d_min}
+
+            if tool_name == "tool_check_label_value_match":
+                vals = _get("data_values", [])
+                rats = _get("visual_ratios", [])
+                if not vals:
+                    return None
+                return {"label_values": vals, "visual_ratios": rats or [],
+                        "y_min": _get("y_min", 0), "y_max": _get("y_max", 100)}
+
+            if tool_name == "tool_check_baseline_alignment":
+                starts = _get("bar_start_values", [])
+                return {"bar_start_values": starts} if starts else None
+
+            if tool_name == "tool_check_bar_scale_symmetry":
+                lv = _get("left_bar_values", [])
+                lp = _get("left_bar_px", [])
+                rv = _get("right_bar_values", [])
+                rp = _get("right_bar_px", [])
+                if not lv or not rv:
+                    return None
+                return {"left_values": lv, "left_px": lp,
+                        "right_values": rv, "right_px": rp}
+
+            if tool_name == "tool_check_pie_sum":
+                pcts = _get("pie_pcts", [])
+                return {"percentages": pcts} if pcts else None
+
+            if tool_name == "tool_check_multi_pie_sum":
+                pcts = _get("pie_pcts", [])
+                return {"all_pcts": pcts, "chart_count": 0} if pcts else None
+
+            if tool_name == "tool_check_pie_angles":
+                pcts   = _get("pie_pcts", [])
+                angles = _get("pie_angles_deg", [])
+                if not pcts or not angles:
+                    return None
+                return {"pie_pcts": pcts, "pie_angles_deg": angles}
+
+            if tool_name == "tool_check_selective_annotation":
+                idx  = _get("annotated_indices", [])
+                vals = _get("pie_pcts") or _get("data_values", [])
+                if not vals:
+                    return None
+                return {"annotated_indices": idx, "all_values": vals}
+
+            if tool_name == "tool_check_tick_intervals":
+                ticks = _get("y_ticks", [])
+                return {"ticks": ticks} if len(ticks) >= 3 else None
+
+            if tool_name == "tool_check_slope_distortion":
+                vals = _get("data_values", [])
+                ypx  = _get("visual_y_px", [])
+                # visual_y_px가 없으면 결과가 항상 정상으로 나오므로 건너뜀
+                # (실제 픽셀 좌표는 LLM이 직접 추출해야 의미있는 검증 가능)
+                if len(vals) < 3 or len(ypx) < 3:
+                    return None
+                return {"values": vals, "visual_y_px": ypx,
+                        "x_labels": _get("x_labels", [])}
+
+            if tool_name == "tool_check_area_distortion":
+                vals  = _get("data_values", [])
+                areas = _get("visual_areas", [])
+                if not vals:
+                    return None
+                return {"values": vals, "visual_areas": areas or []}
+
+            if tool_name == "tool_check_bin_widths":
+                edges = _get("bin_edges", [])
+                widths = _get("visual_bin_widths_px", [])
+                if not edges:
+                    return None
+                return {"bin_edges": edges, "visual_widths_px": widths or []}
+
+            return None
+
+        # 필수 도구 실행
+        mandatory_results: dict = {}
+        evidence = dict(state.get("tool_evidence", {}))
+
+        for tool_name in tools_to_run:
+            args = _build_args(tool_name)
+            if args is None:
+                print(f"     ⏭️  {tool_name}: 인자 부족 → 건너뜀")
+                continue
+            if tool_name not in OBSERVER_TOOLS_BY_NAME:
+                continue
+            try:
+                result = await asyncio.to_thread(
+                    OBSERVER_TOOLS_BY_NAME[tool_name].invoke, args
+                )
+                if not isinstance(result, str):
+                    result = json.dumps(result, ensure_ascii=False)
+                mandatory_results[tool_name] = result
+                evidence[tool_name]          = result[:400]
+                print(f"     ✅ [필수] {tool_name}: {result[:80]}...")
+            except Exception as e:
+                print(f"     ❌ [필수] {tool_name}: {e}")
+                mandatory_results[tool_name] = f"오류: {e}"
+
+        return {
+            **state,
+            "mandatory_tool_results":   mandatory_results,
+            "tool_evidence":            evidence,
+            "observer_tool_call_count": state.get("observer_tool_call_count", 0) + len(mandatory_results),
+        }
 
     # ─────────────────────────────────────────────────────
     # Observer — LLM 호출
@@ -327,32 +542,107 @@ RULE: Call tools first. Output JSON only after ≥5 tool calls.
     async def _node_observer_llm(self, state: AgentState) -> AgentState:
         msgs = state.get("observer_messages", [])
         used = sum(1 for m in msgs if isinstance(m, ToolMessage))
-        print(f"     [Observer LLM] 메시지:{len(msgs)} / 도구결과:{used}회")
+        print(f"     [Observer LLM 3단계] 메시지:{len(msgs)} / 추가도구:{used}회")
 
-        if 0 < used < 5:
-            extra = (
-                f"\n\nOnly {used} tool(s) called. Call more tools now. Do NOT output JSON yet."
+        # 첫 진입 — 시스템 프롬프트 + 컨텍스트 구성
+        if not msgs:
+            analysis      = state.get("observer_analysis", "")
+            hypotheses    = state.get("observer_hypotheses", [])
+            mandatory_res = state.get("mandatory_tool_results", {})
+            use_rag       = state.get("use_rag", True)
+            img_b64       = await asyncio.to_thread(image_to_base64, state["image_path"])
+
+            # 필수 도구 결과 요약 텍스트
+            if mandatory_res:
+                mand_lines = "\n".join(
+                    f"  - {k}: {v[:120]}" for k, v in mandatory_res.items()
+                )
+                mandatory_section = f"## Mandatory tool results (already run):\n{mand_lines}"
+            else:
+                mandatory_section = "## Mandatory tools: none ran (chart type unknown)"
+
+            # RAG 힌트
+            rag_hint  = state.get("rag_hint", "")
+            rag_section = (
+                f"\n## Similar deceptive charts from database:\n{rag_hint[:400]}\n"
+                if rag_hint else ""
             )
-            invoke_msgs = list(msgs) + [HumanMessage(content=extra)]
-        else:
-            invoke_msgs = msgs
+
+            system = textwrap.dedent(f"""
+You are a chart fraud investigator. Phase 1 analysis and mandatory tool checks are already done.
+Your job now: verify the hypotheses with targeted tools, then summarize findings.
+
+{mandatory_section}
+{rag_section}
+## Hypotheses from Phase 1 analysis (need verification):
+{json.dumps(hypotheses, ensure_ascii=False)}
+
+## Your workflow — follow this EXACTLY:
+For each remaining hypothesis (not yet confirmed or ruled out by mandatory tools):
+  1. Write: "[Checking] <hypothesis> — because <specific visual evidence>"
+  2. Call ONE relevant tool with precise values read from the chart
+  3. After tool result: Write "[Found] <what the result means>" OR "[Clear] no issue found"
+  4. If tool result reveals a NEW suspicion → add it and check it too
+
+After all hypotheses are checked, output ONLY this JSON:
+{{
+  "chart_type": "bar|line|pie|donut|scatter|bubble|histogram|bidirectional_bar|area",
+  "image_description": "all numbers, labels, colors, annotations seen in the chart",
+  "suspected_misleaders": ["key1", "key2"],
+  "tool_evidence": {{"tool_name": "what was found"}}
+}}
+
+## MISLEADER KEYS: {', '.join(sorted(MISLEADER_KEYS))}
+
+RULES:
+- Only call tools for hypotheses NOT already covered by mandatory tools above.
+- If mandatory tools already confirmed an error → include it in final JSON.
+- Write interpretation text after EVERY tool result.
+- Output JSON only when all hypotheses are verified.
+- Take your time and think step by step.
+""").strip()
+
+            human_content: list[Any] = [
+                {"type": "text", "text": (
+                    f"Phase 1 analysis:\n{analysis[:600]}\n\n"
+                    "Now verify remaining hypotheses with targeted tool calls. "
+                    "For each tool call, explain WHY you are calling it and interpret the result."
+                )},
+                {"type": "image_url", "image_url": {"url": f"data:image/png;base64,{img_b64}"}},
+            ]
+            msgs = [SystemMessage(content=system), HumanMessage(content=human_content)]
+
+        # 루프 중 — 매 라운드 독려 메시지 갱신 (이미 호출된 도구 목록 포함)
+        elif used > 0:
+            already_called = list(state.get("tool_evidence", {}).keys())
+            already_str = ", ".join(already_called) if already_called else "none"
+            msgs = list(msgs) + [HumanMessage(content=(
+                f"Good. {used} tool(s) called so far.\n"
+                f"Already called (do NOT call these again): {already_str}\n"
+                "If all hypotheses are verified, output the final JSON now. "
+                "If there are remaining unchecked hypotheses, call ONE new tool (not from the list above). "
+                "Remember: write [Checking] before calling a tool, [Found]/[Clear] after result."
+            ))]
 
         available = self._get_available_tools()
-        llm = ChatOllama(model=LLM_NAME, num_predict=4000, temperature=0.1,
-                         num_image_tokens=IMAGE_TOKENS, think=False)
+        llm = ChatOllama(model=LLM_NAME, num_predict=4000, temperature=0.1, reasoning=False)
         llm_with_tools = llm.bind_tools(available)
 
         try:
-            resp = await asyncio.to_thread(llm_with_tools.invoke, invoke_msgs)
+            resp = await asyncio.to_thread(llm_with_tools.invoke, msgs)
         except Exception as e:
             print(f"     ❌ LLM 실패: {e}")
             resp = AIMessage(content="[LLM 호출 실패]")
 
         if getattr(resp, "tool_calls", None):
-            print(f"     → 도구 호출: {[tc['name'] for tc in resp.tool_calls]}")
+            print(f"     → 추가 도구: {[tc['name'] for tc in resp.tool_calls]}")
         else:
-            print("     → 최종 답변 생성")
+            preview = (resp.content or "")[:120].replace("\n", " ")
+            print(f"     → 최종 답변: {preview}...")
 
+        # 첫 진입이면 시스템+휴먼 메시지도 함께 반환 (reducer가 누적)
+        if not state.get("observer_messages"):
+            return {"observer_messages": msgs + [resp]}
         return {"observer_messages": [resp]}
 
     # ─────────────────────────────────────────────────────
@@ -372,6 +662,10 @@ RULE: Call tools first. Output JSON only after ≥5 tool calls.
             name, args, tid = tc["name"], tc["args"], tc["id"]
             if name not in OBSERVER_TOOLS_BY_NAME:
                 result = f"알 수 없는 도구: {name}"
+            elif name in evidence:
+                # 이미 실행된 도구 — 재실행 차단, 기존 결과 반환
+                result = f"[DUPLICATE] {name} was already called. Previous result: {evidence[name][:200]}. Do NOT call this tool again."
+                print(f"       ⛔ {name}: 중복 호출 차단 (기존 결과 재사용)")
             else:
                 try:
                     result = await asyncio.to_thread(OBSERVER_TOOLS_BY_NAME[name].invoke, args)
@@ -424,17 +718,23 @@ RULE: Call tools first. Output JSON only after ≥5 tool calls.
         print(f"     → 도구 {tool_count}회 / 증거: {list(tool_evidence.keys())}")
         print(f"     → 1차 의심: {suspected}")
 
-        similar: list[dict] = []
-        rag_hint_text = ""
+        # RAG는 1단계(observer_analyze)에서 이미 조회 완료 → 결과 재사용
+        similar       = state.get("similar_examples", [])
+        rag_hint_text = state.get("rag_hint", "")
         if state.get("use_rag", True):
             try:
-                rag_query    = image_desc or chart_type
-                similar      = await asyncio.to_thread(query_vector_db, rag_query, 3)
-                rag_hint_text = await asyncio.to_thread(format_rag_hint, rag_query, 8)
-                suspected    = await self._rag_refine(suspected, chart_type, image_desc,
-                                                      tool_evidence, rag_hint_text)
-                if similar:
-                    print(f"     📚 RAG 유사사례 {len(similar)}건 로드")
+                if not rag_hint_text:
+                    # fallback: 1단계 RAG 실패 시 여기서 재시도
+                    rag_query     = image_desc or chart_type
+                    similar       = await asyncio.to_thread(query_vector_db, rag_query, 3)
+                    rag_hint_text = await asyncio.to_thread(format_rag_hint, rag_query, 8)
+                    if similar:
+                        print(f"     📚 RAG 유사사례 {len(similar)}건 로드 (fallback)")
+                else:
+                    print(f"     📚 RAG 유사사례 {len(similar)}건 (1단계 결과 재사용)")
+                # _rag_refine: 최종 tool_evidence를 반영해 suspected 목록 정제
+                suspected = await self._rag_refine(suspected, chart_type, image_desc,
+                                                   tool_evidence, rag_hint_text)
             except Exception as e:
                 print(f"     ⚠️ RAG 건너뜀: {e}")
 
@@ -476,44 +776,41 @@ Extract all numbers from this chart. Output ONLY JSON (null or [] if unreadable)
   "bin_edges": [], "visual_bin_widths_px": [],
   "is_bidirectional_bar": false,
   "left_bar_values": [], "left_bar_px": [],
-  "right_bar_values": [], "right_bar_px": []
+  "right_bar_values": [], "right_bar_px": [],
+  "visual_y_px": []
 }
 ```
-Notes: visual_ratios = bar heights as 0-1 fraction of Y-axis range.
-For bidirectional bar: left_bar_px/right_bar_px = estimated bar length 0.0-1.0.
-For donut: annotated_indices = indices of prominently highlighted slice numbers.
+Notes:
+- visual_ratios = bar heights as 0-1 fraction of Y-axis range.
+- For bidirectional bar: left_bar_px/right_bar_px = estimated bar length 0.0-1.0.
+- For donut: annotated_indices = indices of prominently highlighted slice numbers.
+- For line charts: visual_y_px = each data point's Y pixel position from top (top=0).
+  Estimate based on chart height. Example: chart height 300px, point at 1/3 from top → 100.
 """)
         raw = await asyncio.to_thread(
             call_vision_llm,
             f"Extract all numbers. Suspected: {state['suspected_misleaders']}",
-            state["image_path"], extract_sys, 1200, 0.0,
+            state["image_path"], extract_sys, 1200, 0.0, False,   # use_thinking=False
         )
         nums = parse_json(raw)
         if not isinstance(nums, dict):
             nums = {}
 
-        # ── LLM 도구 루프 (최대 MAX_MATH_LLM_LOOPS) ──────────
-        math_sys = textwrap.dedent("""
-You are a mathematical fraud verifier. Given chart numbers, call tools to verify manipulations.
+        # ── LLM 수치 분석 (도구 없이 JSON 판단만) ──────────
+        math_sys = textwrap.dedent(f"""
+You are a mathematical fraud verifier. Analyze the extracted numbers and identify confirmed manipulations.
 
-Call ALL applicable tools:
-- y_min > 0 → tool_check_axis_truncation
-- pie_pcts → tool_check_pie_sum AND tool_check_pie_angles
-- y_ticks ≥3 → tool_check_tick_intervals AND tool_check_log_scale
-- has_dual_axis → tool_check_dual_axis
-- visual_ratios + data_values → tool_check_label_value_match
-- annotated_indices → tool_check_selective_annotation (CRITICAL for donut: checks if annotated ≠ max)
-- bar_start_values → tool_check_baseline_alignment
-- bin_edges → tool_check_bin_widths
-- highlighted_indices → tool_check_color_emphasis_bias
-- chart_width_px + chart_height_px → tool_check_aspect_ratio
-- x_labels → tool_check_data_gap + tool_check_item_order
-- is_bidirectional_bar=true → tool_check_bar_scale_symmetry(left_values, left_px, right_values, right_px)
+Based ONLY on the numbers provided, determine which of these are mathematically confirmed:
+- y_min > 0 AND data values significantly higher → truncated_axis
+- tick intervals inconsistent → inconsistent_tick
+- visual ratios don't match label values → data_visual_disproportion
+- bar starts != 0 → non_aligned_baseline
+- pie angles don't match percentages → misrepresentation
 
-After ALL applicable tools called, output:
-```json
-{"confirmed_misleaders": ["key1"], "math_summary": "summary of all findings"}
-```
+Output ONLY this JSON:
+{{"confirmed_misleaders": ["key1", "key2"], "math_summary": "brief summary"}}
+
+Available keys: {', '.join(sorted(MISLEADER_KEYS))}
 """).strip()
 
         math_msgs: list[Any] = [
@@ -527,39 +824,18 @@ After ALL applicable tools called, output:
 
         math_evidence:  dict[str, str] = {}
         math_confirmed: list[str]      = []
-        llm       = ChatOllama(model=LLM_NAME, num_predict=3000, temperature=0.0, think=False)
-        llm_tools = llm.bind_tools(self._get_available_tools())
-
-        for _ in range(MAX_MATH_LLM_LOOPS):
-            try:
-                resp = await asyncio.to_thread(llm_tools.invoke, math_msgs)
-            except Exception as e:
-                print(f"     ⚠️ 수학 LLM 실패: {e}")
-                break
-            math_msgs.append(resp)
-            if not getattr(resp, "tool_calls", None):
-                math_confirmed = [
-                    m for m in parse_json(resp.content or "").get("confirmed_misleaders", [])
-                    if m in MISLEADER_KEYS
-                ]
-                break
-            print(f"     → 수학 도구: {[tc['name'] for tc in resp.tool_calls]}")
-            for tc in resp.tool_calls:
-                if tc["name"] in OBSERVER_TOOLS_BY_NAME:
-                    try:
-                        res = await asyncio.to_thread(
-                            OBSERVER_TOOLS_BY_NAME[tc["name"]].invoke, tc["args"]
-                        )
-                        if not isinstance(res, str):
-                            res = json.dumps(res, ensure_ascii=False)
-                        math_evidence[tc["name"]] = res[:300]
-                        print(f"       ✅ {tc['name']}: {res[:80]}...")
-                    except Exception as te:
-                        res = f"오류: {te}"
-                        print(f"       ❌ {tc['name']}: {te}")
-                else:
-                    res = f"알 수 없는 도구: {tc['name']}"
-                math_msgs.append(ToolMessage(tool_call_id=tc["id"], name=tc["name"], content=res))
+        # bind_tools 대신 JSON 출력만 요청 (XML 직렬화 오류 방지)
+        llm = ChatOllama(model=LLM_NAME, num_predict=1000, temperature=0.0, reasoning=False)
+        try:
+            resp = await asyncio.to_thread(llm.invoke, math_msgs)
+            math_confirmed = [
+                m for m in parse_json(resp.content or "").get("confirmed_misleaders", [])
+                if m in MISLEADER_KEYS
+            ]
+            if math_confirmed:
+                print(f"     → 수학 LLM 확정: {math_confirmed}")
+        except Exception as e:
+            print(f"     ⚠️ 수학 LLM 실패: {e}")
 
         # 직접 수학 도구 실행
         mt     = MathTools()
@@ -575,7 +851,7 @@ After ALL applicable tools called, output:
 
         clear_errors = sum([
             checks.get("axis_truncation", {}).get("truncated", False),
-            checks.get("pie", {}).get("verdict") == "부적절",
+            checks.get("pie", {}).get("verdict") in ("부적절", "오류"),
             checks.get("pie_angles", {}).get("distortion_detected", False),
             checks.get("bar_scale_symmetry", {}).get("scale_manipulation", False),
             checks.get("dual_axis", {}).get("misleading", False),
@@ -614,46 +890,106 @@ After ALL applicable tools called, output:
 
         print(f"\n  😈 반박자 에이전트 [라운드 {rnd}/{MAX_DEBATE_ROUNDS}]...")
 
+        # 이전 라운드 요약
         prev_str = ""
         for h in history:
             prev_str += (
                 f"\n[라운드 {h['round']}]\n"
-                f"  반박자: {h.get('adv_claims_summary','')}\n"
-                f"  관찰자: {h.get('obs_response_summary','')}\n"
-                f"  합의 오류: {h.get('agreed_errors',[])}\n"
-                f"  기각: {h.get('dismissed',[])}\n"
+                f"  반박자 주장: {h.get('adv_claims_summary','')}\n"
+                f"  관찰자 응답: {h.get('obs_response_summary','')}\n"
+                f"  합의된 오류: {h.get('agreed_errors',[])}\n"
+                f"  기각된 항목: {h.get('dismissed',[])}\n"
             )
 
+        # 도구 증거 (300자로 확장)
+        tool_ev_str = json.dumps(
+            {k: v[:300] for k, v in tool_ev.items()},
+            ensure_ascii=False, indent=2
+        )
+
+        rag_hint    = state.get("rag_hint", "")
+        rag_section = f"\n## Similar deceptive chart cases:\n{rag_hint[:800]}\n" if rag_hint else ""
+
+        all_keys = ", ".join(sorted(MISLEADER_KEYS))
+
         system = textwrap.dedent(f"""
-Round {rnd}/{MAX_DEBATE_ROUNDS}. You are a devil's advocate. Challenge observer findings and find missed errors.
+You are an aggressive devil's advocate auditing a chart fraud investigation.
+Your mission: ATTACK the observer's findings ruthlessly and find errors they MISSED.
 
-Previous rounds: {prev_str.strip() if prev_str else 'none'}
+## Chart you are analyzing:
+Type: {chart_type}
+Description: {image_desc[:1000]}
 
-Output ONLY valid JSON (no markdown, no explanation):
+## Observer's current findings:
+Suspected errors: {suspected}
+
+## All tool evidence collected so far:
+{tool_ev_str[:1200]}
+{rag_section}
+## Previous debate rounds:
+{prev_str.strip() if prev_str else 'none'}
+
+## Your attack strategy (MUST follow all 3):
+
+### 1. CHALLENGE existing findings (be skeptical)
+For EACH suspected error the observer found, ask:
+- Is the evidence actually strong enough? Could this be a false alarm?
+- Did the tool measure the right thing? Are the numbers reliable?
+- Is there an alternative innocent explanation?
+
+### 2. FIND missed errors (look at the chart yourself)
+Look at the image carefully. The observer may have missed:
+- Subtle axis manipulations (does Y-axis start at 0?)
+- Color/emphasis tricks (are certain bars highlighted?)
+- Missing context (is this cherry-picked data?)
+- Scale distortions (do visual sizes match actual values?)
+- Annotation tricks (are labels selective or misleading?)
+
+### 3. ESCALATE any confirmed errors
+If the observer found a real error, push harder: is it worse than reported?
+Are there related deceptions they didn't notice?
+
+## ALL possible misleader keys:
+{all_keys}
+
+Take your time and think step by step before forming your challenges and hypotheses.
+
+## Output ONLY valid JSON:
 {{
-  "challenges": [{{"target_error": "<misleader_key>", "reason": "<why it may be wrong>"}}],
-  "new_hypotheses": [{{"misleader_key": "<one of the MISLEADER_KEYS>", "hypothesis": "<specific claim>", "tool": "<tool_name>"}}],
-  "adversarial_summary": "<overall: what was missed or overstated>"
+  "challenges": [
+    {{"target_error": "<key from suspected list>", "challenge_strength": "weak|moderate|strong", "reason": "<specific visual or numeric evidence for why it may be wrong or overstated>"}}
+  ],
+  "new_hypotheses": [
+    {{"misleader_key": "<key>", "hypothesis": "<specific visual claim with numbers>", "suggested_tool": "<tool_name>", "visual_evidence": "<what you see in the chart>"}}
+  ],
+  "adversarial_summary": "<overall verdict: what was missed, overstated, or needs deeper investigation>"
 }}
-
-MISLEADER_KEYS examples: truncated_axis, selective_emphasis, dual_axis_manipulation, misrepresentation, data_gap, cherry_picking, log_scale_unlabeled, aspect_ratio_distortion, inverted_axis, baseline_manipulation
 """).strip()
 
-        rag_hint = state.get("rag_hint", "")
-        rag_section = f"\n## MisViz RAG 유사 사례 (참고):\n{rag_hint[:600]}\n" if rag_hint else ""
-
-        user = (
-            f"Chart type: {chart_type}\n"
-            f"Image description: {image_desc[:500]}\n"
-            f"Observer's suspected errors: {suspected}\n"
-            f"Tool evidence so far: {json.dumps({k: v[:60] for k, v in tool_ev.items()}, ensure_ascii=False)[:400]}\n"
-            f"{rag_section}"
-            f"Round {rnd}: Challenge findings and find what was missed."
+        prompt = (
+            f"Round {rnd}/{MAX_DEBATE_ROUNDS}. "
+            "You have access to the chart image. "
+            "Inspect it carefully and challenge the observer's findings aggressively. "
+            "Find at least 2 missed errors and challenge at least 1 existing finding with specific visual evidence."
         )
 
-        raw = await asyncio.to_thread(
-            call_text_llm, [{"role": "user", "content": user}], system, 1500, 0.3
-        )
+        try:
+            raw = await asyncio.to_thread(
+                call_vision_llm,
+                prompt,
+                state["image_path"],
+                system,
+                2000,   # max_tokens
+                0.3,    # temperature (약간 창의적)
+                False,  # use_thinking=False
+            )
+        except Exception as e:
+            print(f"     ⚠️ Vision LLM 실패, 텍스트 LLM fallback: {e}")
+            raw = await asyncio.to_thread(
+                call_text_llm,
+                [{"role": "user", "content": prompt}],
+                system, 2000, 0.3
+            )
 
         p      = parse_json(raw)
         claims = []
@@ -661,12 +997,24 @@ MISLEADER_KEYS examples: truncated_axis, selective_emphasis, dual_axis_manipulat
             for h in p.get("new_hypotheses", []):
                 key = h.get("misleader_key", "")
                 if key:
-                    claims.append({"type": key, "hypothesis": h.get("hypothesis", ""), "tool": h.get("tool", "")})
+                    claims.append({
+                        "type":           key,
+                        "hypothesis":     h.get("hypothesis", ""),
+                        "tool":           h.get("suggested_tool", h.get("tool", "")),
+                        "visual_evidence": h.get("visual_evidence", ""),
+                    })
             for c in p.get("challenges", []):
                 target = c.get("target_error", "")
                 if target:
-                    claims.append({"type": "challenge", "target_error": target, "reason": c.get("reason", "")})
+                    claims.append({
+                        "type":             "challenge",
+                        "target_error":     target,
+                        "challenge_strength": c.get("challenge_strength", "moderate"),
+                        "reason":           c.get("reason", ""),
+                    })
             print(f"     → 주장 {len(claims)}개: {[c.get('type','?') for c in claims]}")
+        else:
+            print(f"     ⚠️ 반박자 JSON 파싱 실패 → 원문 사용")
 
         adv_summary = p.get("adversarial_summary", raw[:200]) if p else raw[:200]
         conv = log_conversation(state.get("conversation", []),
@@ -701,34 +1049,68 @@ MISLEADER_KEYS examples: truncated_axis, selective_emphasis, dual_axis_manipulat
 
             img_b64    = await asyncio.to_thread(image_to_base64, state["image_path"])
             claims_str = json.dumps(claims, ensure_ascii=False, indent=2)
-            nums_str   = json.dumps(nums, ensure_ascii=False)[:600]
+            nums_str   = json.dumps(nums, ensure_ascii=False)[:1000]
             rag_hint   = state.get("rag_hint", "")
-            rag_section = f"\n## MisViz RAG 유사 사례:\n{rag_hint[:500]}\n" if rag_hint else ""
+            rag_section = f"\n## MisViz RAG 유사 사례:\n{rag_hint[:600]}\n" if rag_hint else ""
+
+            # 도전 항목과 새 가설을 분리해서 명확히 표시
+            challenges    = [c for c in claims if c.get("type") == "challenge"]
+            new_hyps      = [c for c in claims if c.get("type") != "challenge"]
+            challenge_txt = "\n".join(
+                f"  - [{c.get('challenge_strength','?').upper()}] '{c['target_error']}': {c.get('reason','')}"
+                for c in challenges
+            ) or "  없음"
+            new_hyp_txt = "\n".join(
+                f"  - '{h['type']}': {h.get('hypothesis','')} (시각증거: {h.get('visual_evidence','')})"
+                for h in new_hyps
+            ) or "  없음"
 
             system = textwrap.dedent(f"""
-Debate round {rnd}/{MAX_DEBATE_ROUNDS}. Use tools to verify or refute each adversarial claim.
+You are the chart fraud investigator defending your findings in Debate Round {rnd}/{MAX_DEBATE_ROUNDS}.
+An adversarial auditor has challenged your work. Respond with evidence.
 {rag_section}
-Numbers extracted: {nums_str}
+## Extracted numbers from chart:
+{nums_str}
 
-For each claim below: call the relevant tool, then output JSON.
+## Your response strategy — MUST follow all 3 steps:
 
+### 1. DEFEND or CONCEDE each challenge
+For each challenge, call a tool to get hard evidence, then:
+- If tool confirms your finding: write "[DEFENDED] <key>: <tool result proves it>"
+- If tool disproves your finding: write "[CONCEDED] <key>: <evidence shows I was wrong>"
+
+### 2. INVESTIGATE each new hypothesis
+The adversary spotted potential errors you missed. For each:
+- Call the suggested tool (or the most relevant one) with actual values from the chart
+- Write "[CONFIRMED NEW] <key>" or "[RULED OUT] <key>"
+
+### 3. Output final JSON after all tools are called:
 ```json
 {{
-  "newly_confirmed": ["keys confirmed by tools"],
-  "conceded": ["keys disproven by tools"],
-  "observer_summary": "findings"
+  "newly_confirmed": ["keys proven by tools this round"],
+  "conceded": ["keys you were wrong about"],
+  "still_suspected": ["keys from before that remain valid"],
+  "observer_summary": "what changed this round and why"
 }}
 ```
+
+## Rules:
+- Call tools BEFORE writing the final JSON
+- Use actual numbers from the chart — not estimates
+- Do NOT concede without tool evidence proving you wrong
+- Do NOT maintain a finding if the tool clearly disproves it
 """).strip()
 
             human_content: list[Any] = [
                 {"type": "text", "text": (
                     f"Chart type: {chart_type}\n"
-                    f"Image description: {image_desc[:300]}\n"
+                    f"Image description: {image_desc[:600]}\n"
                     f"My current suspected errors: {suspected}\n\n"
-                    f"Adversarial's claims this round:\n{claims_str[:800]}\n\n"
-                    "Look at the image and use tools to respond to each claim. "
-                    "Call at least 3 tools relevant to the adversarial's hypotheses."
+                    f"## Adversary's challenges to my existing findings:\n{challenge_txt}\n\n"
+                    f"## Adversary's new hypotheses I may have missed:\n{new_hyp_txt}\n\n"
+                    "Inspect the chart image carefully. "
+                    "Call tools to defend/concede each challenge and investigate each new hypothesis. "
+                    "Start immediately with the first tool call."
                 )},
                 {"type": "image_url", "image_url": {"url": f"data:image/png;base64,{img_b64}"}},
             ]
@@ -737,8 +1119,19 @@ For each claim below: call the relevant tool, then output JSON.
         used = sum(1 for m in msgs if isinstance(m, ToolMessage))
         print(f"     [토론 Observer LLM R{rnd}] 메시지:{len(msgs)} / 도구결과:{used}")
 
-        llm = ChatOllama(model=LLM_NAME, num_predict=4000, temperature=0.1,
-                         num_image_tokens=IMAGE_TOKENS, think=False)
+        # 루프 중 — 매 라운드 독려 메시지 갱신 (이미 호출된 도구 목록 포함)
+        if used > 0:
+            already_called = list(state.get("tool_evidence", {}).keys())
+            already_str = ", ".join(already_called) if already_called else "none"
+            msgs = list(msgs) + [HumanMessage(content=(
+                f"Good. {used} tool(s) called so far.\n"
+                f"Already called (do NOT call these again): {already_str}\n"
+                "If all challenges and new hypotheses are addressed, output the final JSON now. "
+                "If there are remaining unchecked items, call ONE new tool (not from the list above). "
+                "Remember: write [DEFENDED]/[CONCEDED]/[CONFIRMED NEW]/[RULED OUT] after each result."
+            ))]
+
+        llm = ChatOllama(model=LLM_NAME, num_predict=4000, temperature=0.1, reasoning=False)
         llm_with_tools = llm.bind_tools(self._get_available_tools())
 
         try:
@@ -771,6 +1164,10 @@ For each claim below: call the relevant tool, then output JSON.
             name, args, tid = tc["name"], tc["args"], tc["id"]
             if name not in OBSERVER_TOOLS_BY_NAME:
                 result = f"알 수 없는 도구: {name}"
+            elif name in evidence:
+                # 이미 실행된 도구 — 재실행 차단, 기존 결과 반환
+                result = f"[DUPLICATE] {name} was already called. Previous result: {evidence[name][:200]}. Do NOT call this tool again."
+                print(f"       ⛔ [토론] {name}: 중복 호출 차단 (기존 결과 재사용)")
             else:
                 try:
                     result = await asyncio.to_thread(OBSERVER_TOOLS_BY_NAME[name].invoke, args)
@@ -1066,7 +1463,7 @@ Available keys: {', '.join(sorted(MISLEADER_KEYS))}
             raw = await asyncio.to_thread(
                 call_vision_llm,
                 "Re-analyze this chart for deliberate manipulation. Find ALL deceptions.",
-                state["image_path"], system, 800, 0.1,
+                state["image_path"], system, 800, 0.1, False,   # use_thinking=False
             )
             p = parse_json(raw)
             new_suspected = [m for m in p.get("suspected", []) if m in MISLEADER_KEYS]
@@ -1085,7 +1482,7 @@ Recheck: {reason} | Targets: {state.get('suspected_misleaders')}
             raw = await asyncio.to_thread(
                 call_vision_llm,
                 f"Recheck: {reason}\nVerify: {state['suspected_misleaders']}",
-                state["image_path"], system, 600, 0.1,
+                state["image_path"], system, 600, 0.1, False,   # use_thinking=False
             )
             p = parse_json(raw)
             confirmed = [m for m in p.get("confirmed", []) if m in MISLEADER_KEYS]
@@ -1190,11 +1587,11 @@ Recheck: {reason} | Targets: {state.get('suspected_misleaders')}
             if state.get("early_exit") and math_ok:
                 score += 0.03
 
-                per_misleader[m] = {
-                "score":       round(min(max(score, 0.0), 1.0), 3),
-                "grade":       self._score_grade(round(min(max(score, 0.0), 1.0), 3)),
-                "breakdown":   breakdown,
-                "reason": conf_data.get(m, {}).get("reason", ""),
+            per_misleader[m] = {
+                "score":     round(min(max(score, 0.0), 1.0), 3),
+                "grade":     self._score_grade(round(min(max(score, 0.0), 1.0), 3)),
+                "breakdown": breakdown,
+                "reason":    conf_data.get(m, {}).get("reason", ""),
             }
 
         overall = self._compute_overall_confidence(state, per_misleader, debate_history)
@@ -1242,7 +1639,7 @@ Recheck: {reason} | Targets: {state.get('suspected_misleaders')}
 
         pie = [v for v in (nums.get("pie_pcts") or []) if isinstance(v, (int, float))]
         if pie:
-            checks["pie"] = mt.check_pie(pie)
+            checks["pie"] = mt.check_multi_pie_sum(pie)  # 다중 파이차트 오탐 방지
 
         vr = [v for v in (nums.get("visual_ratios") or []) if isinstance(v, (int, float))]
         if vr and data_vals and len(vr) == len(data_vals):
@@ -1319,6 +1716,12 @@ Recheck: {reason} | Targets: {state.get('suspected_misleaders')}
             if x_range > 0 and y_range > 0:
                 checks["aspect_ratio"] = mt.check_aspect_ratio(int(cw), int(ch), x_range, y_range)
 
+        # slope_distortion: 실제 visual_y_px가 있을 때만 검증 (역산 픽셀은 의미 없음)
+        vis_ypx = [v for v in (nums.get("visual_y_px") or []) if isinstance(v, (int, float))]
+        if len(data_vals) >= 3 and len(vis_ypx) == len(data_vals):
+            x_labels = nums.get("x_labels") or []
+            checks["slope"] = mt.check_slope_distortion(data_vals, vis_ypx, x_labels)
+
         return checks
 
     # ─────────────────────────────────────────────────────
@@ -1328,7 +1731,6 @@ Recheck: {reason} | Targets: {state.get('suspected_misleaders')}
     def _key_to_tool(self, key: str) -> str:
         mapping = {
             "truncated_axis":            "tool_check_axis_truncation",
-            "inappropriate_pie":         "tool_check_pie_sum",
             "misrepresentation":         "tool_check_pie_angles",
             "inconsistent_tick":         "tool_check_tick_intervals",
             "inappropriate_order":       "tool_check_item_order",
@@ -1425,7 +1827,6 @@ Recheck: {reason} | Targets: {state.get('suspected_misleaders')}
                     print(f"       📌 {tool_name} → {key}{' ('+label+')' if label else ''}")
 
             if tool_name == "tool_check_axis_truncation"     and ev.get("truncated"):              _add("truncated_axis")
-            if tool_name == "tool_check_pie_sum"             and not ev.get("appropriate"):        _add("inappropriate_pie")
             if tool_name == "tool_check_pie_angles"          and ev.get("distortion_detected"):    _add("misrepresentation", "각도왜곡")
             if tool_name == "tool_check_tick_intervals"      and not ev.get("consistent", True):   _add("inconsistent_tick")
             if tool_name == "tool_check_item_order"          and not ev.get("correct", True):      _add("inappropriate_order")
@@ -1441,6 +1842,8 @@ Recheck: {reason} | Targets: {state.get('suspected_misleaders')}
             if tool_name == "tool_check_baseline_alignment"  and ev.get("misaligned"):            _add("non_aligned_baseline")
             if tool_name == "tool_check_data_gap"            and ev.get("gaps_detected"):         _add("cherry_picking")
             if tool_name == "tool_check_color_emphasis_bias" and ev.get("emphasis_biased"):       _add("selective_emphasis")
+            if tool_name == "tool_check_slope_distortion"    and ev.get("distorted"):              _add("slope_distortion")
+            if tool_name == "tool_check_misleading_annotation" and ev.get("misleading"):           _add("misleading_annotation")
         return result
 
     async def _rag_refine(self, suspected, chart_type, image_desc, tool_evidence, rag_hint) -> list[str]:
@@ -1480,7 +1883,6 @@ Output JSON only:
     def _math_confirms(self, key: str, math_checks: dict) -> bool:
         mapping = {
             "truncated_axis":            lambda c: c.get("axis_truncation", {}).get("truncated", False),
-            "inappropriate_pie":         lambda c: c.get("pie", {}).get("verdict") == "부적절",
             "misrepresentation":         lambda c: (
                 c.get("pie_angles", {}).get("distortion_detected", False) or
                 c.get("bar_scale_symmetry", {}).get("scale_manipulation", False) or
@@ -1513,7 +1915,6 @@ Output JSON only:
             ev = json.loads(evidence)
             pairs = {
                 "truncated_axis":            ("tool_check_axis_truncation",      "truncated",           True),
-                "inappropriate_pie":         ("tool_check_pie_sum",              "appropriate",         False),
                 "inconsistent_tick":         ("tool_check_tick_intervals",       "consistent",          False),
                 "inappropriate_order":       ("tool_check_item_order",           "correct",             False),
                 "dual_axis":                 ("tool_check_dual_axis",            "manipulation_likely", True),
@@ -1551,7 +1952,9 @@ Output JSON only:
             "tool_check_bin_widths":         lambda e: e.get("inconsistent") is False,
             "tool_check_baseline_alignment": lambda e: e.get("misaligned") is False,
             "tool_check_data_gap":           lambda e: e.get("gaps_detected") is False,
-            "tool_check_color_emphasis_bias": lambda e: e.get("emphasis_biased") is False,
+            "tool_check_color_emphasis_bias":      lambda e: e.get("emphasis_biased") is False,
+            "tool_check_slope_distortion":         lambda e: e.get("distorted") is False,
+            "tool_check_misleading_annotation":    lambda e: e.get("misleading") is False,
         }
         checker = clear_negative.get(tool_name)
         if not checker:

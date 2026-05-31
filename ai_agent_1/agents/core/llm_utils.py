@@ -41,21 +41,23 @@ def call_vision_llm(
     use_thinking: bool = True,
 ) -> str:
     """ChatOllama Vision 호출 (Gemma4 Thinking Mode 지원)."""
-    ck = cache_key(prompt + system, image_path)
+    # use_thinking 여부도 캐시 키에 포함 (True/False 결과 혼용 방지)
+    ck = cache_key(prompt + system + str(use_thinking), image_path)
     if ck in _RESPONSE_CACHE:
-        return _RESPONSE_CACHE[ck]
+        cached = _RESPONSE_CACHE[ck]
+        if cached:   # 빈 문자열은 캐시 히트로 인정하지 않음
+            return cached
 
     llm = ChatOllama(
         model=LLM_NAME,
         num_predict=max_tokens,
         temperature=temperature,
-        num_image_tokens=IMAGE_TOKENS,
+        reasoning=use_thinking,
     )
 
-    full_system = ("<|think|>\n" + system) if (use_thinking and system) else system
     messages = []
-    if full_system:
-        messages.append(SystemMessage(content=full_system))
+    if system:
+        messages.append(SystemMessage(content=system))
 
     img_b64 = image_to_base64(image_path)
     messages.append(HumanMessage(content=[
@@ -63,17 +65,24 @@ def call_vision_llm(
         {"type": "image_url", "image_url": {"url": f"data:image/png;base64,{img_b64}"}},
     ]))
 
-    try:
-        resp = llm.invoke(messages)
-        result = resp.content or ""
-        if "<channel|>" in result:
-            result = result.split("<channel|>")[-1].strip()
-        _RESPONSE_CACHE[ck] = result
-        return result
-    except Exception as e:
-        raise RuntimeError(
-            f"Vision LLM 호출 실패: {e}\n  모델: {LLM_NAME}\n  → ollama pull {LLM_NAME}"
-        ) from e
+    for attempt in range(3):   # 빈 응답 시 최대 3회 재시도
+        try:
+            resp = llm.invoke(messages)
+            result = resp.content or ""
+            if "<channel|>" in result:
+                result = result.split("<channel|>")[-1].strip()
+            if result:
+                _RESPONSE_CACHE[ck] = result
+                return result
+            # 빈 응답 → 재시도
+            print(f"     ⚠️ Vision LLM 빈 응답 (시도 {attempt+1}/3) → 재시도")
+        except Exception as e:
+            if attempt == 2:
+                raise RuntimeError(
+                    f"Vision LLM 호출 실패: {e}\n  모델: {LLM_NAME}\n  → ollama pull {LLM_NAME}"
+                ) from e
+            print(f"     ⚠️ Vision LLM 오류 (시도 {attempt+1}/3): {e} → 재시도")
+    return ""
 
 
 def call_text_llm(
@@ -84,20 +93,22 @@ def call_text_llm(
     use_thinking: bool = True,
 ) -> str:
     """ChatOllama 텍스트 호출 (Thinking Mode 지원)."""
-    ck = cache_key(str(messages) + system)
+    ck = cache_key(str(messages) + system + str(use_thinking))
     if ck in _RESPONSE_CACHE:
-        return _RESPONSE_CACHE[ck]
+        cached = _RESPONSE_CACHE[ck]
+        if cached:
+            return cached
 
     llm = ChatOllama(
         model=LLM_NAME,
         num_predict=max_tokens,
         temperature=temperature,
+        reasoning=use_thinking,
     )
 
-    full_system = ("<|think|>\n" + system) if (use_thinking and system) else system
     lc_messages = []
-    if full_system:
-        lc_messages.append(SystemMessage(content=full_system))
+    if system:
+        lc_messages.append(SystemMessage(content=system))
     for m in messages:
         if m["role"] == "user":
             lc_messages.append(HumanMessage(content=m["content"]))
@@ -107,9 +118,8 @@ def call_text_llm(
     try:
         resp = llm.invoke(lc_messages)
         result = resp.content or ""
-        if "<channel|>" in result:
-            result = result.split("<channel|>")[-1].strip()
-        _RESPONSE_CACHE[ck] = result
+        if result:
+            _RESPONSE_CACHE[ck] = result
         return result
     except Exception as e:
         raise RuntimeError(f"텍스트 LLM 호출 실패: {e}") from e
