@@ -22,3 +22,6 @@ chart-detector/raw_data/
 chart-detector/server/downloads/
 chart-detector/server/temp/
 chart-detector/server/results.html
+
+ai_agent_1/misviz_images/
+ai_agent_1/misviz_vectordb/
