@@ -1,66 +1,52 @@
-🗺️ ChartQuiz 코드 구조 및 동작 원리 안내서
-이 문서는 ChartQuiz 프로젝트의 전체적인 코드 아키텍처와 각 핵심 파일들의 역할을 설명합니다. 코드를 수정하거나 새로운 기능을 추가할 때 내비게이션으로 활용하세요.
+🗺️ ChartQuiz 코드 구조 및 동작 원리 안내서 (v2.0)
+이 문서는 ChartQuiz 프로젝트의 최종 아키텍처와 핵심 파일들의 역할을 설명합니다.
 
 🌊 전체 시스템 흐름도 (데이터의 여정)
-우리 시스템은 독자가 기사를 읽는 순간부터 퀴즈 팝업이 뜨기까지 크게 4단계를 거칩니다.
+[프론트] 타겟팅: content.js가 웹페이지 내 기사 본문 영역을 분석하여 차트 이미지를 탐지합니다.
 
-[프론트] 기사 본문 타겟팅 및 이미지 탐지: content.js가 웹페이지에서 광고나 배너를 제외한 '진짜 기사 본문' 영역만 스캔하여 차트로 보이는 이미지를 찾아냅니다.
+[프론트 ➔ 백엔드] 호출: content.js가 background.js에게 분석 작업을 무전(Message)으로 요청하고, background.js는 이를 받아 FastAPI 서버(127.0.0.1:8000)로 전송합니다. (이 과정은 30초 타임아웃을 방지하기 위한 비동기 이벤트 기반으로 작동합니다.)
 
-[프론트 ➔ 백엔드] 전송: background.js가 수집된 이미지를 FastAPI 서버로 보냅니다 (fetch).
+[백엔드] 2중 지능형 필터링:
 
-[백엔드] 2중 필터링 및 AI 분석: * detector.py에서 OpenCV/OCR로 1차 검증(진짜 차트인지 판별)을 합니다.
+1차 필터(CNN): cnn.py가 이미지를 0.1초 만에 분석하여 '차트가 아니면' 즉시 드랍합니다.
 
-통과한 이미지는 LangGraph 파이프라인(workflow.py)을 타고 AI 에이전트들에게 전달되어 왜곡 여부 판별과 퀴즈를 생성합니다.
+2차 필터(멀티에이전트): 진짜 차트라면 main.py가 LangGraph 워크플로우를 가동합니다.
 
-[백엔드 ➔ 프론트] UI 렌더링: 완성된 퀴즈 데이터를 받아 content.js가 화면에 미니 배너와 신호등 퀴즈 UI를 동적으로 그립니다.
+[백엔드 ➔ 프론트] UI 렌더링: background.js가 역으로 content.js에게 결과를 쏴주면, content.js가 차트 위에 팝업 UI를 생성합니다.
 
-🖥️ 프론트엔드 (크롬 익스텐션)
-위치: /extension/ 폴더
+🖥️ 프론트엔드 (크롬 익스텐션) - /extension/
+content.js (UI 렌더링 및 통신 제어)
 
-1. content.js (DOM 탐색, 광고 필터링 및 UI 렌더링)
-역할: 브라우저 화면(DOM)에 직접 접근하여 이미지를 수집하고, 서버 응답에 따라 팝업 UI를 화면에 그려주는 가장 중요한 프론트엔드 파일입니다.
+핵심: sendToServer 함수가 이제 chrome.runtime.sendMessage를 통해 background.js와 통신합니다. 서버에서 보내주는 왜곡 데이터(is_misleading)를 받아 showQuizOverlay를 통해 화면에 팝업을 그립니다.
 
-핵심 함수:
+background.js (비동기 통신병)
 
-collectImages(): 스크롤할 때마다 이미지를 수집합니다. (핵심 최적화 로직 포함)
+핵심: 브라우저와 서버 사이의 통신 중개자입니다. fetch API를 사용하여 30초 이상 걸릴 수 있는 AI 연산을 안전하게 기다린 뒤, 분석이 완료되면 chrome.tabs.sendMessage를 통해 결과물을 content.js로 전달합니다.
 
-본문 타겟팅: #articleBody, .news_view 등 언론사가 주로 사용하는 컨테이너를 우선 탐색하여 엉뚱한 곳의 이미지를 무시합니다.
+⚙️ 백엔드 & AI 에이전트 - /server/
+main.py (시스템 게이트웨이)
 
-광고 블랙리스트 필터링: 이미지나 부모 태그에 ad, banner, sponsor 등의 키워드가 포함되어 있으면 서버로 보내지 않고 즉시 차단합니다. 이를 통해 서버 과부하와 AI 추론 비용을 획기적으로 절약합니다.
+핵심: FastAPI 서버의 엔트리포인트입니다. cnn.py로 1차 필터링 후, 통과한 이미지만 workflow.py의 LangGraph 엔진으로 넘깁니다. 퀴즈 생성 로직(quiz_generator)과 결합하여 최종 응답을 JSON으로 구성합니다.
 
-sendToServer(): 수집한 이미지를 백그라운드로 넘기고, 응답에 에러가 없는지(chrome.runtime.lastError) 체크합니다.
+workflow.py (AI 워크플로우 엔진)
 
-showQuizOverlay(): HCI 시나리오의 핵심입니다. AI가 왜곡된 차트라고 판정하면, 이미지 하단에 '미니 제안 배너'를 띄웁니다. 사용자의 선택에 따라 '전체 퀴즈 화면(신호등 UI 포함)' 또는 '바로 해설 보기' 화면을 동적으로 생성하여 화면에 덧씌웁니다.
+핵심: ChartClassifierAgent와 DistortionDetectorAgent를 노드로 연결합니다. LangGraph를 통해 데이터가 노드를 이동할 때마다 ChartCheckState를 갱신하며 수사망을 좁혀갑니다.
 
-2. background.js (통신병 / 서비스 워커)
-역할: content.js와 파이썬 백엔드 서버(main.py) 사이에서 데이터를 배달하는 백그라운드 일꾼입니다.
+state.py (상태 관리 데이터베이스)
 
-핵심 기능: fetch() API를 사용해 http://127.0.0.1:8000/analyze로 POST 요청을 보냅니다. AI 연산이 길어져서 크롬 브라우저가 통신을 끊어버리는 오류(Timeout)를 방지하기 위해 catch 블록으로 에러를 안전하게 핸들링합니다.
+핵심: 에이전트 간 주고받는 모든 데이터의 집합소입니다. chart_image_path부터 분석 증거(visual_errors), 최종 판정(verdict), 퀴즈 정보(quiz_question)까지 모든 흐름을 관리합니다.
 
-⚙️ 백엔드 & AI 에이전트 (FastAPI + LangGraph)
-위치: /server/ 폴더
+/agents/core/ (수사관 에이전트들)
 
-1. main.py (API 웹 서버)
-역할: 크롬 익스텐션의 요청을 가장 먼저 받아내는 출입구입니다.
+agent.py: 멀티에이전트 시스템의 중심. observer와 debate 노드를 통제합니다.
 
-핵심 기능: /analyze 엔드포인트에서 detector.py의 기본 검증을 먼저 실행합니다. 이미지가 진짜 차트라고 판명(is_chart: true)되면, 준비해 둔 LangGraph AI 워크플로우(workflow_app.ainvoke)를 비동기로 실행시키고 최종 결과물을 JSON으로 반환합니다.
+distortion_detector.py: 차트의 왜곡(Y축 절단, 이중 축 등)을 파헤치는 전문가 에이전트입니다.
 
-2. workflow.py (AI 공장 컨베이어 벨트)
-역할: 여러 AI 에이전트들이 순서대로 일할 수 있도록 LangGraph를 이용해 작업 순서도(StateGraph)를 조립합니다.
+lc_tools.py & math_tools.py: AI가 텍스트만 읽는 게 아니라, 실제 픽셀과 데이터를 수학적으로 검증할 때 사용하는 도구 모음입니다.
 
-작업 순서: 시작 ➔ analyze_content(내용 읽기) ➔ check_visual(시각적 왜곡 검사) ➔ check_data(수치 오류 검사) ➔ final_verdict(최종 판정) ➔ quiz(퀴즈 생성) ➔ 종료
+💡 개발자를 위한 팁
+UI 수정: 로딩 배지나 퀴즈 디자인은 content.js의 showQuizOverlay 함수를 수정하세요.
 
-3. state.py (결재판)
-역할: LangGraph의 노드(에이전트)들이 서로 데이터를 주고받을 때 사용하는 공용 상태(State) 정의서입니다.
+AI 판별력 수정: 1차 판별 모델은 cnn.py, 왜곡 분석 로직은 distortion_detector.py를 살펴보시면 됩니다.
 
-저장 데이터: 차트 이미지 경로, 분석된 오류 목록(수치/시각), 최종 판정 결과(is_misleading), 그리고 생성된 퀴즈 데이터(quiz_question, quiz_answer, quiz_explanation, confidence)를 모두 안전하게 보관하고 다음 노드로 전달합니다.
-
-4. /agents/distortion_detector.py (분석 및 판정 에이전트)
-역할: 차트의 왜곡 요소를 찾아내는 핵심 두뇌 클래스입니다.
-
-핵심 기능: Local LLM(Llama 3.2 Vision / Gemma 4 등)을 사용하여 차트의 텍스트와 축을 읽고, Y축 잘림, 비율 왜곡 등 사용자를 속이는 요소를 찾아내어 최종 확신도(높음/중간/낮음)를 판별합니다.
-
-5. /agents/quiz_generator.py (퀴즈 출제 에이전트)
-역할: 판정된 결과를 바탕으로 사용자에게 인지적 충격을 주는 교육용 퀴즈를 만듭니다.
-
-핵심 로직: is_misleading이 False이면 연산을 스킵합니다. True인 경우, 데이터 저널리스트 페르소나를 부여받아 "독자가 직관적으로 착각하기 쉬운 잘못된 결론"을 미끼로 던지는 매력적인 O/X 퀴즈와 팩트 대조 해설을 생성합니다.
+통신 디버깅: 서버 응답이 이상하다면 main.py의 로그를, 프론트에서 통신이 안 된다면 F12 콘솔의 Unchecked runtime.lastError 메시지를 확인하세요.
