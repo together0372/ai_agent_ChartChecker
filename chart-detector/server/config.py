@@ -6,7 +6,7 @@ class Config:
 
     # OpenAI 설정
     # ① 환경변수에서 API 키를 가져오되, 없으면 빈 문자열을 기본값으로 사용
-    MODEL_NAME: str = "gemma4:e4b-it-q4_K_M"
+    MODEL_NAME: str = "qwen3.5:9b"
     MODEL_TEMPERATURE: float = 0.0
     MODEL_TOP_K: int = 5
     MODEL_TOP_P: int = 64

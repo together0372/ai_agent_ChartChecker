@@ -1,98 +1,68 @@
-📊 ChartQuiz (뉴스 차트 왜곡 탐지기)
-HCI 프로젝트: AI를 활용하여 뉴스 기사 속 왜곡된 차트를 탐지하고, 독자의 인지적 충격(Cognitive Dissonance)을 유도하는 인터랙티브 크롬 익스텐션입니다.
+# 📊 ChartQuiz: 뉴스 차트 왜곡 탐지 및 퀴즈 생성 시스템
 
-✨ 기획 의도 및 핵심 시나리오 (UX)
-단순히 "이 차트는 왜곡되었습니다"라고 알려주는 것을 넘어, [Trigger → Engage → Visual Reveal] 패턴을 통해 사용자가 능동적으로 정보의 진실을 파악하도록 설계되었습니다.
+Chrome Extension과 FastAPI 서버를 연동하여, 뉴스 사이트를 탐색할 때 차트 이미지를 자동으로 수집하고 **CNN(1차) + 멀티에이전트 LLM(2차)** 기반으로 시각적 왜곡을 탐지하여 사용자에게 교육용 O/X 퀴즈를 띄워주는 시스템입니다.
 
-Trigger (탐지): 기사 스크롤 중 차트를 발견하면 시야를 가리지 않는 하단 미니 배너 팝업을 제공합니다.
+---
 
-Engage (참여): 사용자가 스스로 O/X 퀴즈를 풀거나, 퀴즈를 건너뛰고 해설만 볼 수 있는 선택권(Agency)을 부여합니다.
+## 🚀 시스템 아키텍처 (동작 흐름)
 
-Visual Reveal (충격 및 학습): AI의 확신도를 나타내는 '신호등 UI'와 함께, 시각적 착각과 실제 팩트를 대조하는 날카로운 해설을 제공합니다.
+```text
+[프론트엔드 (Chrome Extension)]
+  1. 기사 스크롤 중 본문 이미지 탐지 (광고/배너 필터링)
+  2. FastAPI 서버로 이미지 URL 전송 및 로딩 스피너 표출 (⚙️ AI 분석 중...)
 
-🛠 기술 스택 (Tech Stack)
-Frontend: JavaScript (Chrome Extension Manifest V3), HTML/CSS (DOM Manipulation)
+[백엔드 (FastAPI + PyTorch + LangGraph)]
+  3. CNN 모델(MobileNetV3): 이미지가 실제 "차트"인지 1차 판별 (아니면 즉시 드랍)
+  4. LangGraph 멀티에이전트: 진짜 차트인 경우, 도구(수치 추출/수학 검증)를 활용해 왜곡 분석
+  5. 데이터 저널리스트 에이전트: 왜곡 기반 O/X 퀴즈 및 해설 생성
 
-Backend: Python, FastAPI, Uvicorn
+[프론트엔드 (Chrome Extension)]
+  6. 서버 응답을 받아 차트 위에 "👀 숨겨진 진실 퀴즈" 팝업 UI 동적 렌더링
 
-AI Agent: LangGraph, LangChain, Ollama (Local LLM)
+  🛠️ 설치 및 세팅
+1. Ollama 설치 및 로컬 LLM 모델 다운로드
+우선 Ollama 공식 홈페이지에서 프로그램을 설치한 후, 아래 명령어로 모델을 다운로드합니다.
+ollama pull qwen3.5:9b
 
-Computer Vision: OpenCV, Tesseract OCR (1차 차트 필터링)
-
-🚀 설치 및 실행 방법 (Getting Started)
-프로젝트를 실행하려면 1. AI 모델 세팅, 2. 백엔드 서버 구동, 3. 크롬 익스텐션 설치 세 가지 단계가 필요합니다.
-
-1. AI 환경 세팅 (Ollama)
-로컬에서 AI 에이전트를 돌리기 위해 Ollama가 설치되어 있어야 합니다.
-
-Ollama 공식 홈페이지에서 다운로드 및 설치를 진행합니다.
-
-터미널을 열고 프로젝트에서 사용하는 모델을 다운로드합니다.
-
-Bash
-# 사용 중인 모델에 맞게 명령어를 입력하세요.
-ollama pull gemma4:e4b-it-q4_K_M  
-2. 백엔드 서버 구동 (FastAPI)
-파이썬 가상환경을 세팅하고 의존성 패키지를 설치한 뒤 서버를 실행합니다.
-
-VS Code 등에서 chart-detector/server 폴더로 이동합니다.
-
-터미널을 열고 아래 명령어를 순서대로 실행합니다.
-
-Bash
-# 1. 가상환경 생성 및 활성화 (Windows 기준)
-python -m venv venv
-.\venv\Scripts\activate
-
-# 2. 필수 패키지 설치
+2. 백엔드 패키지 설치
+Python 3.11 이상의 환경(가상환경 권장)에서 필수 패키지를 설치합니다.
+cd chart-detector/server
 pip install -r requirements.txt
 
-# 3. FastAPI 서버 실행
+3. 크롬 익스텐션 로드 (프론트엔드)
+1) 크롬 주소창에 chrome://extensions/ 입력 후 접속
+
+2) 우측 상단 [개발자 모드] 활성화
+
+3) 좌측 상단 [압축해제된 확장 프로그램 로드] 클릭
+
+4) 프로젝트의 chart-detector/extension 폴더 선택
+
+🏃‍♂️ 사용법
+1. FastAPI 서버 실행
+VS Code 터미널에서 백엔드 서버를 가동합니다.
+cd chart-detector/server
 uvicorn main:app --reload
-💡 터미널에 Application startup complete.가 뜨면 백엔드 준비 완료입니다. 터미널 창은 끄지 말고 계속 켜두세요!
 
-3. 크롬 익스텐션(Frontend) 설치
-크롬 브라우저를 열고 주소창에 chrome://extensions/를 입력합니다.
+2. 차트 탐지 테스트
+화이트리스트에 등록된 뉴스 사이트(SBS, KBS 등) 기사에 접속합니다.
 
-우측 상단의 [개발자 모드] 토글을 켭니다.
+기사 본문의 차트 이미지가 화면에 나타나면, 우측 상단에 ⚙️ AI 분석 중... 로딩 뱃지가 뜹니다.
 
-좌측 상단의 [압축해제된 확장 프로그램 로드] 버튼을 클릭합니다.
+분석이 완료되면 차트 위에 O/X 퀴즈 팝업이 생성됩니다.
 
-프로젝트 폴더 내의 extension 폴더를 통째로 선택하여 로드합니다.
+🔍 탐지 가능한 오류 유형 
+Y축 절단    Y축을 0이 아닌 값에서 시작해 차이를 과장
+이중 축    조작 무관한 두 변수를 이중 Y축으로 설정해 상관관계처럼 눈속임
+선택적    강조 특정 값만 색상·주석으로 부각해 결론을 유도
+비대칭 눈금    양방향 막대 차트의 좌우 축 스케일 불일치
+파이 각도 왜곡    파이/도넛 슬라이스 각도가 실제 데이터 비율과 불일치
+데이터 공백    X축 일부 구간(연도 등)을 임의로 생략
+로그 축 미표기    로그 스케일임을 표시하지 않아 시각적 오해 유발
 
-💡 테스트 및 사용 방법
-화이트리스트에 등록된 뉴스 사이트(예: SBS 뉴스, KBS 뉴스 등)에 접속합니다.
+⚙️ 주요 설정
+server/main.py 및 server/workflow.py 내부에서 아래 항목들을 변경할 수 있습니다.
 
-키보드 F12를 눌러 개발자 도구의 [Console] 탭을 열어두면 통신 상태를 실시간으로 확인할 수 있습니다.
+LLM 모델 변경: llm = ChatOllama(model="gemma4:e4b-it-q4_K_M", ...)
 
-기사를 읽으며 스크롤을 내려 차트 이미지가 화면에 나타나게 합니다.
-
-백엔드 서버가 차트를 분석하는 동안 잠시 대기합니다. (컴퓨터 사양에 따라 10~30초 소요)
-
-분석이 완료되면 화면 하단에 "👀 숨겨진 진실 퀴즈가 있습니다!"라는 미니 배너가 등장합니다.
-
-[O] 버튼을 눌러 퀴즈를 풀거나, [해설 보기] 버튼을 눌러 AI의 분석 결과를 확인하세요!
-
-📁 주요 폴더 구조 및 역할
-/server/main.py : 프론트엔드와 통신하는 FastAPI 메인 웹 서버
-
-/server/workflow.py : LangGraph 기반의 AI 에이전트 실행 파이프라인
-
-/server/agents/ : 왜곡 탐지기(distortion_detector.py)와 퀴즈 생성기(quiz_generator.py) 코드가 분리되어 있는 폴더
-
-/extension/content.js : 브라우저 화면에서 차트를 찾고 팝업 UI를 그려주는 핵심 프론트엔드 코드
-
-/extension/background.js : 서버와 익스텐션 간의 비동기 통신(Fetch)을 담당하는 서비스 워커
-
-🚨 트러블슈팅 (Troubleshooting)
-Q. 코드를 수정했는데 브라우저 화면이 안 바뀝니다.
-
-A. content.js나 background.js를 수정한 경우, 반드시 chrome://extensions/ 페이지에서 새로고침(🔄) 버튼을 누른 뒤 테스트할 뉴스 기사 페이지도 새로고침(F5) 해야 합니다.
-
-Q. 터미널에 ModuleNotFoundError가 뜹니다.
-
-A. 파이썬 가상환경(venv)이 활성화되어 있는지 확인하고, 현재 위치한 경로가 chart-detector/server 폴더 내부인지 확인하세요.
-
-Q. F12 콘솔에 Failed to fetch 에러가 뜹니다.
-
-A. 파이썬 백엔드 서버(uvicorn)가 꺼져 있거나 에러로 멈춰있는 상태입니다. 백엔드 터미널을 확인하고 서버를 재시작해 주세요.
+CNN 신뢰도 임계값: cnn.py 내부의 THRESHOLD (기본값 0.45)

@@ -1,8 +1,37 @@
-fastapi
-uvicorn
-opencv-python
-numpy
-pillow
-pytesseract
-requests
-python-multipart
+# ─────────────────────────────────────────────────────────
+# ChartQuiz 왜곡 탐지 시스템 — 의존 패키지
+# Python 3.11+
+# pip install -r requirements.txt
+# ─────────────────────────────────────────────────────────
+
+# ── Web Server (프론트-백엔드 통신) ────────────────────────
+fastapi>=0.100.0
+uvicorn>=0.23.0
+pydantic>=2.13.3
+
+# ── CNN Classifier (차트 판별 모델 MobileNetV3) ────────────
+torch>=2.1.0
+torchvision>=0.16.0
+pillow>=11.1.0
+
+# ── LangChain / LangGraph (멀티에이전트 퀴즈 생성) ────────
+langchain>=1.2.17
+langchain-core>=1.3.2
+langchain-ollama>=1.1.0
+langchain-chroma>=1.1.0
+langgraph>=1.1.10
+
+# ── Ollama Python SDK ─────────────────────────────────────
+# 모델: qwen3.5:9b (Ollama 실행 파일 별도 설치 필요)
+ollama>=0.6.2
+
+# ── RAG 벡터DB + 임베딩 (데이터 검증용) ────────────────────
+chromadb>=1.5.9
+sentence-transformers>=5.5.1
+
+# ── 웹 검색 및 유틸리티 (도구 에이전트용) ───────────────────
+duckduckgo-search>=8.1.1
+requests>=2.33.1
+aiohttp>=3.13.5
+httpx>=0.28.1
+beautifulsoup4>=4.14.3

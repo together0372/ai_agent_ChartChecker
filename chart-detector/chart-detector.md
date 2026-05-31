@@ -1,126 +1,63 @@
-# 뉴스 차트 자동 수집 프로젝트
+1️⃣ 백엔드(AI 서버) 실행하기
+프론트엔드에서 보내는 차트 이미지를 분석하려면 반드시 FastAPI 서버가 켜져 있어야 합니다.
 
-## 실행 방법
+VS Code 하단 터미널을 열고, 서버 폴더로 이동합니다.
 
-Anaconda Prompt 또는 터미널에서 가상환경을 실행한 뒤:
+Bash
+cd chart-detector/server
+(선택) 파이썬 가상환경을 켭니다.
 
-```bash
+Bash
 conda activate chartdetector
-```
+Uvicorn을 이용해 로컬 서버를 실행합니다.
 
-server 폴더로 이동 후:
-
-```bash
+Bash
 uvicorn main:app --reload
-```
+💡 --reload 옵션이 켜져 있어서, 백엔드 코드(main.py, cnn.py 등)를 수정하고 저장하면 서버가 자동으로 재시작됩니다.
 
-를 실행한다. 이후 Chrome에서:
+2️⃣ 프론트엔드 (크롬 익스텐션) 설치하기
+크롬 브라우저 주소창에 chrome://extensions/를 입력하여 접속합니다.
 
-```text
-chrome://extensions
-```
+우측 상단의 [개발자 모드] 토글 버튼을 켭니다.
 
-접속 → 개발자 모드 활성화 → `압축해제된 확장 프로그램 로드` 클릭 → extension 폴더 선택. 그 다음 뉴스 사이트에 접속하면 이미지가 자동 분석되며 차트 이미지는:
+좌측 상단의 [압축해제된 확장 프로그램 로드] 버튼을 클릭합니다.
 
-```text
-server/downloads/
-```
+우리 프로젝트 폴더 내의 chart-detector/extension 폴더를 선택합니다.
 
-폴더에 자동 저장된다.
+✅ 성공하면 목록에 "Auto Image Saver (또는 ChartQuiz)" 아이콘이 나타납니다.
 
-## 프로젝트 요약
+3️⃣ 🕵️ 실전 테스트 및 디버깅 방법 (F12 활용)
+코드를 수정하고 웹페이지에서 제대로 작동하는지 확인하려면 개발자 도구(F12)를 활용해야 합니다.
 
-이 프로젝트는:
+📌 규칙 1: 코드 수정 후에는 무조건 "새로고침(🔄)"
+content.js나 background.js 등 익스텐션 코드를 수정했다면 다음 두 가지를 반드시 해야 적용됩니다.
 
-```text
-Chrome Extension + FastAPI + OpenCV + OCR
-```
+chrome://extensions/ 페이지로 가서 해당 익스텐션 카드의 새로고침(🔄) 아이콘 클릭!
 
-구조를 이용해서 뉴스 사이트를 탐색할 때 자동으로:
+테스트 중이던 뉴스 기사 웹페이지 창으로 돌아와서 화면 새로고침 (F5)!
 
-1. 페이지 이동 감지
-2. 이미지 수집
-3. 차트 여부 분석
-4. 차트 이미지 자동 저장
+📌 규칙 2: F12 콘솔(Console) 로그 확인하기
+SBS 뉴스 등 화이트리스트에 등록된 뉴스 기사(예: 통계나 차트가 있는 기사)에 접속한 뒤, 키보드 F12를 눌러 [Console] 탭을 확인하세요. 다음과 같은 로그가 시간 순서대로 찍히면 완벽하게 작동하는 것입니다.
 
-을 수행하는 시스템이다.
+뉴스 차트 탐지기 로드됨 : 익스텐션이 정상적으로 켜졌음
 
----
+✅ 이미지 발견, 서버로 전송: [이미지 URL] : 기사를 스크롤하여 차트 이미지를 발견하고 백엔드로 던졌음
 
-## 동작 흐름
+(이때 화면의 차트 이미지 우측 상단에 ⚙️ AI 분석 중... 로딩 뱃지가 떠야 합니다)
 
-```text
-뉴스 페이지 접속
-↓
-Chrome Extension이 이미지 탐색
-↓
-background.js가 FastAPI 서버로 전송
-↓
-detector.py가 차트 여부 분석
-↓
-차트면 downloads 폴더에 저장
-```
+🔥 서버 응답 도착! (content.js): {is_chart: true, cnn_confidence: 0.92, is_misleading: true, ...} : 백엔드 AI가 분석을 끝내고 프론트엔드로 정답을 보내왔음
 
----
+✅ 팝업 띄우기 조건 만족! showQuizOverlay 실행! : 화면 하단에 퀴즈 제안 미니 배너가 정상적으로 렌더링됨
 
-# 프로젝트 구조
+📌 자주 발생하는 에러 (Troubleshooting)
+에러 로그: ERR_CONNECTION_REFUSED
 
-```text
-chart-detector/
-├── extension/
-│   ├── manifest.json
-│   ├── background.js
-│   ├── whitelist.js
-│   ├── content.js
-│   └── utils.js
-│
-├── server/
-│   ├── main.py
-│   ├── detector.py
-│   ├── requirements.txt
-│   ├── downloads/
-│   └── temp/
-```
+원인: 백엔드 서버가 꺼져 있습니다. 터미널에서 uvicorn main:app --reload가 잘 돌고 있는지 확인하세요.
 
----
+에러 로그: 익스텐션 내부 통신 에러 (또는 타임아웃)
 
-## 사용 기술
+원인: 익스텐션이 끊겼거나 로컬 LLM 추론이 너무 오래 걸려 브라우저가 통신을 끊었습니다. 익스텐션 새로고침(🔄) 후 기사 페이지를 다시 F5 해보세요.
 
-### Chrome Extension
+아무 로그도 안 뜰 때:
 
-* 페이지 이동 감지
-* 이미지 URL 수집
-* whitelist 기반 사이트 제한
-
-### FastAPI
-
-* 이미지 분석 요청 처리
-* detector.py 실행
-
-### OpenCV
-
-* 선(line) 탐지
-* 막대그래프 구조 탐지
-* 원형그래프 탐지
-
-### Tesseract OCR
-
-* 숫자
-* 퍼센트
-* 경제/통계 키워드
-
----
-
-## 차트 판별 방식
-
-현재 detector.py는 아래 요소들을 종합해서 점수를 계산한다.
-
-* OCR 키워드
-* 숫자 비율
-* 수평/수직선 개수
-* 막대그래프 형태
-* 원형그래프 형태
-
-그리고 score 기준 이상이면 차트 이미지로 판정한다.
-
----
+원인: whitelist.js에 등록되지 않은 사이트이거나, 기사 본문에 이미지가 없는 경우입니다. 코드가 적용 안 된 것일 수 있으니 새로고침(F5)을 다시 해보세요.
