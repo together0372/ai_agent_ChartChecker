@@ -226,8 +226,33 @@ def calculate_chart_score(
 # Save Detected Chart Image
 # =========================================================
 
-def save_chart(src_path: str, site: str) -> str:
-    site_dir = os.path.join(SAVE_DIR, site.replace(".", "_"))
+def _slugify(text: str, maxlen: int = 60) -> str:
+    import re
+    text = re.sub(r'[\\/:*?"<>|]', "", text).strip()
+    text = re.sub(r"\s+", "_", text)
+    return text[:maxlen]
+
+
+def _article_folder(title: str, page: str) -> str:
+    from urllib.parse import urlparse, parse_qs
+    if title:
+        slug = _slugify(title)
+        if slug:
+            return slug
+    parsed = urlparse(page)
+    for key in ("ncd", "news_id", "article_id", "id", "no"):
+        val = parse_qs(parsed.query).get(key)
+        if val:
+            return _slugify(val[0]) or "untitled"
+    seg = [s for s in parsed.path.split("/") if s]
+    if seg:
+        return _slugify(seg[-1]) or "untitled"
+    return "untitled"
+
+
+def save_chart(src_path: str, site: str, title: str = "", page: str = "") -> str:
+    article = _article_folder(title, page)
+    site_dir = os.path.join(SAVE_DIR, site.replace(".", "_"), article)
     os.makedirs(site_dir, exist_ok=True)
 
     dst = os.path.join(site_dir, os.path.basename(src_path))
@@ -282,7 +307,7 @@ def detect_from_file(path: str) -> Dict[str, Any]:
     }
 
 
-def analyze_chart(url: str, page: str, site: str):
+def analyze_chart(url: str, page: str, site: str, title: str = ""):
     try:
         path = download_image(url)
         if not path:
@@ -302,7 +327,7 @@ def analyze_chart(url: str, page: str, site: str):
         result = classify_image(path)
 
         if result["is_chart"]:
-            saved = save_chart(path, site)
+            saved = save_chart(path, site, title, page)
             return {
                 "success": True,
                 "is_chart": True,
