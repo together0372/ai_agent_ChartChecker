@@ -6,11 +6,81 @@ DistortionDetectorAgent — ai_agent 워크플로우용 서브에이전트 래�
 """
 from __future__ import annotations
 
+import re
 from typing import Any, Dict
 
 from .core.agent import DistortionDetectorAgent as _CoreAgent
 from .core.config import MISLEADER_TAXONOMY
 
+
+# ─────────────────────────────────────────────────────────
+# explanation 파싱 헬퍼
+# ─────────────────────────────────────────────────────────
+
+def _parse_explanation(text: str) -> dict:
+    """
+    explanation 마크다운에서 필요한 필드만 추출한다.
+
+    반환:
+        found_errors   : [{"name": str, "evidence": str, "mislead_method": str}]
+        recommendations: [{"title": str, "detail": str}]
+        subtle_analysis: str  (🕵️ 섹션 전체 텍스트)
+    """
+    result = {
+        "found_errors":    [],
+        "recommendations": [],
+        "subtle_analysis": "",
+    }
+
+    # ── 섹션 분리 ──────────────────────────────────────────
+    # 헤더 기준으로 섹션 추출
+    def _section(header_emoji: str) -> str:
+        """헤더 포함 섹션을 다음 # 헤더 전까지 추출"""
+        pattern = rf"#[^#].*?{re.escape(header_emoji)}.*?\n(.*?)(?=\n#\s|\Z)"
+        m = re.search(pattern, text, re.S)
+        return m.group(1).strip() if m else ""
+
+    errors_section  = _section("🚨")
+    subtle_section  = _section("🕵")
+    recs_section    = _section("✅")
+
+    # ── 🚨 발견된 조작 파싱 ────────────────────────────────
+    # 패턴: 번호. **오류명** ... **구체적 증거**: ... **독자 오도 방법**: ...
+    error_blocks = re.split(r"\n\d+\.\s+", "\n" + errors_section)
+    for block in error_blocks:
+        if not block.strip():
+            continue
+
+        name_m     = re.search(r"\*\*(.+?)\*\*", block)
+        evidence_m = re.search(r"\*\*구체적 증거\*\*\s*:\s*(.+?)(?=\*\*|$)", block, re.S)
+        mislead_m  = re.search(r"\*\*독자 오도 방법\*\*\s*:\s*(.+?)(?=\*\*|$)", block, re.S)
+
+        if not name_m:
+            continue
+
+        result["found_errors"].append({
+            "name":          name_m.group(1).strip(),
+            "evidence":      evidence_m.group(1).strip() if evidence_m else "",
+            "mislead_method": mislead_m.group(1).strip() if mislead_m else "",
+        })
+
+    # ── 🕵️ 교묘한 오류 분석 ───────────────────────────────
+    result["subtle_analysis"] = subtle_section
+
+    # ── ✅ 권고사항 파싱 ────────────────────────────────────
+    # 패턴: *   **제목**: 내용
+    for m in re.finditer(r"\*\*(.+?)\*\*\s*:\s*(.+?)(?=\n\*|\Z)", recs_section, re.S):
+        result["recommendations"].append({
+            "title":  m.group(1).strip(),
+            "detail": m.group(2).strip(),
+        })
+
+    return result
+
+
+# ─────────────────────────────────────────────────────────
+# 에이전트 래퍼
+# ─────────────────────────────────────────────────────────
 
 class DistortionDetectorAgent:
     """
@@ -31,6 +101,7 @@ class DistortionDetectorAgent:
 
         1. core 멀티에이전트 시스템 실행 (Observer→Debate→Math→Specialist→Judge)
         2. AgentState → ChartCheckState 필드 매핑
+        3. explanation 파싱 → found_errors / recommendations / subtle_analysis
         """
         image_path = state.chart_image_path
 
@@ -64,17 +135,40 @@ class DistortionDetectorAgent:
             for m in final_misleaders
         ]
 
-        print("\n=========차트 분석 완료=============")
+        # ── explanation 파싱 ────────────────────────────────
+        parsed_report = _parse_explanation(explanation)
 
-        return {
+        print("\n=========차트 분석 완료=============\n")
+        print({
             "chart_description": image_desc,
             "chart_type":        chart_type,
-            "visual_errors":     misleader_names,   # 한국어 오류명 목록
+            "visual_errors":     misleader_names,
             "data_errors":       [],
             "is_misleading":     is_misleading,
             "verdict":           verdict,
             "explanation":       explanation,
             "confidence":        confidence,
-            "final_misleaders":  final_misleaders,  # 내부 키 목록 (추가 필드)
-            "self_confidence":   self_conf,          # 상세 신뢰도 (추가 필드)
+            "final_misleaders":  final_misleaders,
+            "self_confidence":   self_conf,
+            # 파싱 결과
+            "found_errors":      parsed_report["found_errors"],
+            "recommendations":   parsed_report["recommendations"],
+            "subtle_analysis":   parsed_report["subtle_analysis"],
+        })
+
+        return {
+            "chart_description": image_desc,
+            "chart_type":        chart_type,
+            "visual_errors":     misleader_names,
+            "data_errors":       [],
+            "is_misleading":     is_misleading,
+            "verdict":           verdict,
+            "explanation":       explanation,
+            "confidence":        confidence,
+            "final_misleaders":  final_misleaders,
+            "self_confidence":   self_conf,
+            # 파싱 결과
+            "found_errors":      parsed_report["found_errors"],
+            "recommendations":   parsed_report["recommendations"],
+            "subtle_analysis":   parsed_report["subtle_analysis"],
         }

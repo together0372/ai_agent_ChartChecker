@@ -248,20 +248,25 @@ def tool_check_log_scale(
 def tool_check_area_distortion(
     values: list = None,
     visual_areas: list = None,
+    visual_ratios: list = None,
     data_values: list = None,
     areas: list = None,
     bubble_sizes: list = None,
     actual_values: list = None,
     circle_areas: list = None,
+    size_ratios: list = None,
 ) -> str:
-    """버블/원 차트에서 면적이 아닌 반지름에 비례시켜 왜곡하는지 검증합니다.
+    """버블/산점도 차트에서 원 크기를 면적이 아닌 반지름에 비례시켜 왜곡하는지 검증합니다.
 
     Args:
         values: 실제 데이터 값 리스트 (data_values, actual_values 별칭 허용)
-        visual_areas: 원의 시각적 면적(픽셀² 또는 상대 크기) 리스트 (areas, bubble_sizes, circle_areas 별칭 허용)
+        visual_areas: 원들의 시각적 상대 크기 비율 리스트.
+                      절대 픽셀값 불필요 — 상대 비율로 전달하면 됩니다.
+                      예: [2.0, 1.0, 3.0] = 첫 번째 원이 두 번째의 2배, 세 번째의 2/3 크기
+                      (visual_ratios, size_ratios, areas, bubble_sizes, circle_areas 별칭 허용)
     """
     vals = values or data_values or actual_values or []
-    arrs = visual_areas or areas or bubble_sizes or circle_areas or []
+    arrs = visual_areas or visual_ratios or size_ratios or areas or bubble_sizes or circle_areas or []
     if not vals:
         return json.dumps({"checked": False, "note": "values 데이터가 필요합니다."}, ensure_ascii=False)
     return json.dumps(MathTools.check_area_distortion(vals, arrs), ensure_ascii=False)
@@ -557,6 +562,89 @@ def tool_check_slope_distortion(
 
 
 @tool
+def tool_check_cherry_pick_range(
+    shown_values: list = None,
+    full_start_label: str = "",
+    full_end_label: str = "",
+    shown_start_label: str = "",
+    shown_end_label: str = "",
+    values: list = None,
+    data_values: list = None,
+) -> str:
+    """
+    표시된 시간 범위가 유리한 구간만 선택(체리피킹)했는지 탐지합니다.
+
+    Args:
+        shown_values: 차트에 표시된 순서대로의 데이터 값 리스트 (values, data_values 별칭 허용)
+        full_start_label: 전체 데이터의 시작 레이블 (예: '2000년')
+        full_end_label: 전체 데이터의 끝 레이블 (예: '2023년')
+        shown_start_label: 차트에 표시된 시작 레이블 (예: '2010년')
+        shown_end_label: 차트에 표시된 끝 레이블 (예: '2020년')
+    """
+    vals = shown_values or values or data_values or []
+    if not vals:
+        return json.dumps({"checked": False, "note": "shown_values 데이터가 필요합니다."}, ensure_ascii=False)
+    return json.dumps(
+        MathTools.check_cherry_pick_range(vals, full_start_label, full_end_label,
+                                          shown_start_label, shown_end_label),
+        ensure_ascii=False,
+    )
+
+
+@tool
+def tool_check_unit_switch(
+    units: list = None,
+    unit_labels: list = None,
+    values: list = None,
+) -> str:
+    """
+    같은 차트 내에서 단위가 일관성 없이 혼용되는지 탐지합니다.
+    %(퍼센트) + %p(퍼센트포인트) 혼용, 억원 + 조원 혼합, % + 절댓값 혼합 등을 감지합니다.
+
+    Args:
+        units: 데이터 포인트별 단위 문자열 리스트 (unit_labels 별칭 허용)
+               예: ['억원', '억원', '조원'] 또는 ['%', '%p', '%']
+        values: 각 단위에 대응하는 데이터 값 리스트 (선택사항)
+    """
+    u = units or unit_labels or []
+    if not u:
+        return json.dumps({"checked": False, "note": "units 데이터가 필요합니다."}, ensure_ascii=False)
+    v = values or []
+    return json.dumps(
+        MathTools.check_unit_switch(u, v if v else None),
+        ensure_ascii=False,
+    )
+
+
+@tool
+def tool_check_cumulative_vs_period(
+    values: list = None,
+    x_labels: list = None,
+    declared_type: str = "period",
+    data_values: list = None,
+    labels: list = None,
+) -> str:
+    """
+    누적(cumulative) 데이터를 기간(period) 데이터처럼 표시하거나 그 반대로 표시해
+    성장을 과장하는지 탐지합니다.
+
+    Args:
+        values: 시간 순서대로의 데이터 값 리스트 (data_values 별칭 허용)
+                예: 누적 가입자 [100, 250, 480, 800, 1200]
+        x_labels: X축 레이블 리스트 (labels 별칭 허용, 선택사항)
+        declared_type: 차트가 선언한 데이터 유형 ('period' 또는 'cumulative', 기본값 'period')
+    """
+    vals = values or data_values or []
+    if not vals:
+        return json.dumps({"checked": False, "note": "values 데이터가 필요합니다."}, ensure_ascii=False)
+    xlbl = x_labels or labels or []
+    return json.dumps(
+        MathTools.check_cumulative_vs_period(vals, xlbl if xlbl else None, declared_type),
+        ensure_ascii=False,
+    )
+
+
+@tool
 def tool_check_misleading_annotation(
     annotated_intervals: list = None,
     annotations: list = None,
@@ -618,6 +706,9 @@ SUBTLE_TOOLS: list[Any] = [
     tool_check_color_emphasis_bias,
     tool_check_slope_distortion,
     tool_check_misleading_annotation,
+    tool_check_cherry_pick_range,
+    tool_check_unit_switch,
+    tool_check_cumulative_vs_period,
 ]
 
 ALL_TOOLS: list[Any] = OBSERVER_TOOLS + SUBTLE_TOOLS

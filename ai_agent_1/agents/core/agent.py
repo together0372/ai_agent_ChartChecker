@@ -105,7 +105,7 @@ class AgentState(TypedDict):
 # ─────────────────────────────────────────────────────────
 # 상수
 # ─────────────────────────────────────────────────────────
-MAX_OBSERVER_ROUNDS  = 6   # Observer ReAct 최대 도구 호출 (가설 기반이라 줄임)
+MAX_OBSERVER_ROUNDS  = 4   # Observer ReAct 최대 도구 호출 (가설 기반이라 줄임)
 MAX_DEBATE_ROUNDS    = 2   # 토론 최대 라운드
 MAX_DEBATE_OBS_TOOLS = 6   # 토론 내 Observer 도구 호출 최대
 MAX_MATH_LLM_LOOPS   = 4   # 수학 LLM 도구 루프 최대
@@ -114,22 +114,28 @@ MAX_MATH_LLM_LOOPS   = 4   # 수학 LLM 도구 루프 최대
 # 값: [(도구명, 인자 추출 함수용 키)]
 MANDATORY_TOOLS_BY_TYPE: dict[str, list[str]] = {
     # 영어 키
-    "bar":               ["tool_check_axis_truncation", "tool_check_label_value_match", "tool_check_baseline_alignment"],
+    "bar":               ["tool_check_axis_truncation", "tool_check_label_value_match", "tool_check_baseline_alignment",
+                          "tool_check_cherry_pick_range", "tool_check_unit_switch", "tool_check_cumulative_vs_period"],
     "bidirectional_bar": ["tool_check_axis_truncation", "tool_check_bar_scale_symmetry"],
     "pie":               ["tool_check_multi_pie_sum", "tool_check_pie_angles"],
     "donut":             ["tool_check_multi_pie_sum", "tool_check_selective_annotation"],
-    "line":              ["tool_check_axis_truncation", "tool_check_tick_intervals", "tool_check_slope_distortion"],
-    "area":              ["tool_check_axis_truncation", "tool_check_tick_intervals"],
+    "line":              ["tool_check_axis_truncation", "tool_check_tick_intervals",
+                          "tool_check_cherry_pick_range", "tool_check_unit_switch", "tool_check_cumulative_vs_period"],
+    "area":              ["tool_check_axis_truncation", "tool_check_tick_intervals",
+                          "tool_check_cherry_pick_range", "tool_check_cumulative_vs_period"],
     "histogram":         ["tool_check_axis_truncation", "tool_check_bin_widths"],
     "scatter":           ["tool_check_area_distortion"],
     "bubble":            ["tool_check_area_distortion"],
     # 한국어 키 (normalize_chart_type 변환 결과)
-    "막대차트":           ["tool_check_axis_truncation", "tool_check_label_value_match", "tool_check_baseline_alignment"],
+    "막대차트":           ["tool_check_axis_truncation", "tool_check_label_value_match", "tool_check_baseline_alignment",
+                          "tool_check_cherry_pick_range", "tool_check_unit_switch", "tool_check_cumulative_vs_period"],
     "양방향막대차트":      ["tool_check_axis_truncation", "tool_check_bar_scale_symmetry"],
     "파이차트":           ["tool_check_multi_pie_sum", "tool_check_pie_angles"],
     "도넛차트":           ["tool_check_multi_pie_sum", "tool_check_selective_annotation"],
-    "선차트":             ["tool_check_axis_truncation", "tool_check_tick_intervals", "tool_check_slope_distortion"],
-    "영역차트":           ["tool_check_axis_truncation", "tool_check_tick_intervals"],
+    "선차트":             ["tool_check_axis_truncation", "tool_check_tick_intervals",
+                          "tool_check_cherry_pick_range", "tool_check_unit_switch", "tool_check_cumulative_vs_period"],
+    "영역차트":           ["tool_check_axis_truncation", "tool_check_tick_intervals",
+                          "tool_check_cherry_pick_range", "tool_check_cumulative_vs_period"],
     "히스토그램":         ["tool_check_axis_truncation", "tool_check_bin_widths"],
     "산점도":             ["tool_check_area_distortion"],
     "버블차트":           ["tool_check_area_distortion"],
@@ -383,40 +389,59 @@ You are a chart fraud investigator. Your job is to ANALYZE the chart — do NOT 
 
         print(f"\n  🔧 관찰자 에이전트 — [2단계] 필수 도구 실행 ({norm_type}: {len(tools_to_run)}개)...")
 
-        if not tools_to_run:
-            print(f"     차트 유형 '{norm_type}' 필수 도구 없음 → 건너뜀")
-            return state
-
-        # 숫자 추출 (간략 버전 — math 노드보다 앞에 있으므로 별도 추출)
+        # 숫자 추출은 chart_type 인식 여부와 무관하게 항상 실행
+        # — extracted_numbers를 math 노드가 재사용하므로 도구 실행 없어도 추출은 해야 함
+        # math 노드는 이 값을 재사용하여 재추출을 생략함
         extract_sys = textwrap.dedent("""
-Extract all numeric data from this chart. Output ONLY JSON:
+Extract all numbers from this chart. Output ONLY JSON (null or [] if unreadable):
+```json
 {
-  "y_min": null, "y_max": null, "y_ticks": [],
+  "y_min": null, "y_max": null, "y_ticks": [], "x_labels": [], "x_ticks": [],
   "data_values": [], "visual_ratios": [], "bar_start_values": [],
   "pie_pcts": [], "pie_angles_deg": [],
-  "x_labels": [], "annotated_indices": [], "highlighted_indices": [],
+  "has_dual_axis": false, "r_min": null, "r_max": null, "r_ticks": [],
+  "has_log_scale": false, "log_labeled": false,
+  "visual_areas": [], "title": null, "x_label": null, "y_label": null,
+  "has_unit": false, "chart_width_px": null, "chart_height_px": null,
+  "annotated_indices": [], "highlighted_indices": [],
+  "bin_edges": [], "visual_bin_widths_px": [],
+  "is_bidirectional_bar": false,
   "left_bar_values": [], "left_bar_px": [],
   "right_bar_values": [], "right_bar_px": [],
-  "visual_areas": [], "bin_edges": [], "visual_bin_widths_px": [],
-  "chart_width_px": null, "chart_height_px": null,
   "visual_y_px": []
 }
-
-For line charts, estimate each data point's Y pixel position (top=0).
-Example: if chart height is 300px and a point is 1/3 from top, visual_y_px=100.
+```
+Notes:
+- visual_ratios = bar heights as 0-1 fraction of Y-axis range.
+- visual_areas = relative visual sizes between chart elements (NO pixel measurement needed).
+  Estimate by eye: if bubble A looks twice as large as bubble B, use [2.0, 1.0].
+  For pie slices: estimate area proportion relative to the first slice.
+  Leave [] if the chart has no size-encoded elements (bars, lines, etc.).
+- For bidirectional bar: left_bar_px/right_bar_px = estimated bar length 0.0-1.0.
+- For donut: annotated_indices = indices of prominently highlighted slice numbers.
+- For line charts: visual_y_px = each data point's Y pixel position from top (top=0).
+  Estimate based on chart height. Example: chart height 300px, point at 1/3 from top → 100.
 """).strip()
 
         nums: dict = {}
         try:
             raw_nums = await asyncio.to_thread(
-                call_vision_llm, "Extract all numbers.", state["image_path"],
-                extract_sys, 800, 0.0, False,   # use_thinking=False
+                call_vision_llm,
+                f"Extract all numbers. Suspected: {state.get('observer_hypotheses', [])}",
+                state["image_path"],
+                extract_sys, 1200, 0.0, False,   # use_thinking=False
             )
             parsed_nums = parse_json(raw_nums)
             if parsed_nums:
                 nums = parsed_nums
+                print(f"     📐 숫자 추출 완료 → extracted_numbers 저장 (math 노드 재사용)")
         except Exception as e:
             print(f"     ⚠️ 숫자 추출 실패: {e}")
+
+        # 필수 도구가 없으면 숫자 추출 결과만 저장하고 종료
+        if not tools_to_run:
+            print(f"     차트 유형 '{norm_type}' 필수 도구 없음 → 숫자 추출만 저장")
+            return {**state, "extracted_numbers": nums}
 
         def _get(key, default=None):
             v = nums.get(key)
@@ -490,7 +515,9 @@ Example: if chart height is 300px and a point is 1/3 from top, visual_y_px=100.
 
             if tool_name == "tool_check_area_distortion":
                 vals  = _get("data_values", [])
-                areas = _get("visual_areas", [])
+                # visual_areas 우선, 없으면 visual_ratios 로 대체
+                # (LLM은 절대 픽셀 면적보다 상대 비율을 훨씬 신뢰성 있게 추정함)
+                areas = _get("visual_areas", []) or _get("visual_ratios", [])
                 if not vals:
                     return None
                 return {"values": vals, "visual_areas": areas or []}
@@ -501,6 +528,32 @@ Example: if chart height is 300px and a point is 1/3 from top, visual_y_px=100.
                 if not edges:
                     return None
                 return {"bin_edges": edges, "visual_widths_px": widths or []}
+
+            if tool_name == "tool_check_cherry_pick_range":
+                vals = _get("data_values", [])
+                x_labels = _get("x_labels", [])
+                if not vals or len(vals) < 3:
+                    return None
+                return {
+                    "shown_values":      vals,
+                    "shown_start_label": str(x_labels[0])  if x_labels else "",
+                    "shown_end_label":   str(x_labels[-1]) if x_labels else "",
+                }
+
+            if tool_name == "tool_check_unit_switch":
+                # x_labels를 unit_labels로 재활용 (단위 정보가 레이블에 포함될 수 있음)
+                x_labels = _get("x_labels", [])
+                vals = _get("data_values", [])
+                if not vals:
+                    return None
+                return {"units": x_labels or [], "values": vals}
+
+            if tool_name == "tool_check_cumulative_vs_period":
+                vals = _get("data_values", [])
+                x_labels = _get("x_labels", [])
+                if not vals or len(vals) < 3:
+                    return None
+                return {"values": vals, "x_labels": x_labels or [], "declared_type": "period"}
 
             return None
 
@@ -525,13 +578,15 @@ Example: if chart height is 300px and a point is 1/3 from top, visual_y_px=100.
                 evidence[tool_name]          = result[:400]
                 print(f"     ✅ [필수] {tool_name}: {result[:80]}...")
             except Exception as e:
+                # 오류 도구는 mandatory_results와 evidence 모두 제외
+                # — 오류 문자열을 LLM이 "도구 결과"로 오해하는 것을 방지
                 print(f"     ❌ [필수] {tool_name}: {e}")
-                mandatory_results[tool_name] = f"오류: {e}"
 
         return {
             **state,
             "mandatory_tool_results":   mandatory_results,
             "tool_evidence":            evidence,
+            "extracted_numbers":        nums,   # math 노드에서 재사용 (재추출 생략)
             "observer_tool_call_count": state.get("observer_tool_call_count", 0) + len(mandatory_results),
         }
 
@@ -612,11 +667,17 @@ RULES:
             ]
             msgs = [SystemMessage(content=system), HumanMessage(content=human_content)]
 
-        # 루프 중 — 매 라운드 독려 메시지 갱신 (이미 호출된 도구 목록 포함)
+        # 루프 중 — 독려 메시지 갱신 (이전 독려 메시지 제거 후 새 것으로 교체)
         elif used > 0:
             already_called = list(state.get("tool_evidence", {}).keys())
             already_str = ", ".join(already_called) if already_called else "none"
-            msgs = list(msgs) + [HumanMessage(content=(
+            msgs = list(msgs)
+            # 직전에 추가된 독려 메시지가 있으면 교체 (중복 누적 방지)
+            if (msgs and isinstance(msgs[-1], HumanMessage)
+                    and isinstance(msgs[-1].content, str)
+                    and msgs[-1].content.startswith("Good.")):
+                msgs = msgs[:-1]
+            msgs = msgs + [HumanMessage(content=(
                 f"Good. {used} tool(s) called so far.\n"
                 f"Already called (do NOT call these again): {already_str}\n"
                 "If all hypotheses are verified, output the final JSON now. "
@@ -761,7 +822,13 @@ RULES:
     async def _node_math_verifier(self, state: AgentState) -> AgentState:
         print("\n  🧮 수학 검증 에이전트...")
 
-        extract_sys = textwrap.dedent("""
+        # 2단계(observer_mandatory_tools)에서 이미 추출한 경우 재사용, 없으면 여기서 추출
+        nums: dict = state.get("extracted_numbers") or {}
+        if nums:
+            print(f"     ♻️  extracted_numbers 재사용 (Vision LLM 재추출 생략)")
+        else:
+            print(f"     📐 extracted_numbers 없음 → Vision LLM으로 추출")
+            extract_sys = textwrap.dedent("""
 Extract all numbers from this chart. Output ONLY JSON (null or [] if unreadable):
 ```json
 {
@@ -782,19 +849,23 @@ Extract all numbers from this chart. Output ONLY JSON (null or [] if unreadable)
 ```
 Notes:
 - visual_ratios = bar heights as 0-1 fraction of Y-axis range.
+- visual_areas = relative visual sizes between chart elements (NO pixel measurement needed).
+  Estimate by eye: if bubble A looks twice as large as bubble B, use [2.0, 1.0].
+  For pie slices: estimate area proportion relative to the first slice.
+  Leave [] if the chart has no size-encoded elements (bars, lines, etc.).
 - For bidirectional bar: left_bar_px/right_bar_px = estimated bar length 0.0-1.0.
 - For donut: annotated_indices = indices of prominently highlighted slice numbers.
 - For line charts: visual_y_px = each data point's Y pixel position from top (top=0).
   Estimate based on chart height. Example: chart height 300px, point at 1/3 from top → 100.
 """)
-        raw = await asyncio.to_thread(
-            call_vision_llm,
-            f"Extract all numbers. Suspected: {state['suspected_misleaders']}",
-            state["image_path"], extract_sys, 1200, 0.0, False,   # use_thinking=False
-        )
-        nums = parse_json(raw)
-        if not isinstance(nums, dict):
-            nums = {}
+            raw = await asyncio.to_thread(
+                call_vision_llm,
+                f"Extract all numbers. Suspected: {state['suspected_misleaders']}",
+                state["image_path"], extract_sys, 1200, 0.0, False,   # use_thinking=False
+            )
+            parsed = parse_json(raw)
+            if isinstance(parsed, dict):
+                nums = parsed
 
         # ── LLM 수치 분석 (도구 없이 JSON 판단만) ──────────
         math_sys = textwrap.dedent(f"""
@@ -818,18 +889,18 @@ Available keys: {', '.join(sorted(MISLEADER_KEYS))}
             HumanMessage(content=(
                 f"Numbers:\n{json.dumps(nums, ensure_ascii=False, indent=2)}\n\n"
                 f"Suspected: {state['suspected_misleaders']}\n\n"
-                "Call ALL applicable tools, then output JSON."
+                "Analyze the numbers above and output ONLY the JSON."
             )),
         ]
 
-        math_evidence:  dict[str, str] = {}
-        math_confirmed: list[str]      = []
+        math_confirmed: list[str] = []
         # bind_tools 대신 JSON 출력만 요청 (XML 직렬화 오류 방지)
         llm = ChatOllama(model=LLM_NAME, num_predict=1000, temperature=0.0, reasoning=False)
         try:
             resp = await asyncio.to_thread(llm.invoke, math_msgs)
+            parsed_math = parse_json(resp.content or "") or {}
             math_confirmed = [
-                m for m in parse_json(resp.content or "").get("confirmed_misleaders", [])
+                m for m in parsed_math.get("confirmed_misleaders", [])
                 if m in MISLEADER_KEYS
             ]
             if math_confirmed:
@@ -840,8 +911,6 @@ Available keys: {', '.join(sorted(MISLEADER_KEYS))}
         # 직접 수학 도구 실행
         mt     = MathTools()
         checks = self._run_math_tools(mt, nums)
-        for k, v in math_evidence.items():
-            checks[f"tool_{k}"] = {"note": v[:200], "source": "math_llm"}
 
         suspected = list(state.get("suspected_misleaders", []))
         suspected = self._update_suspected_from_math(suspected, checks)
@@ -865,7 +934,7 @@ Available keys: {', '.join(sorted(MISLEADER_KEYS))}
         early_exit = clear_errors >= 2
 
         conv = log_conversation(state.get("conversation", []), "🧮 수학검증",
-            f"LLM도구:{list(math_evidence.keys())} | 확정:{math_confirmed} | 의심:{suspected}")
+            f"LLM확정:{math_confirmed} | 의심:{suspected}")
 
         return {
             **state,
@@ -1043,17 +1112,29 @@ Take your time and think step by step before forming your challenges and hypothe
         nums       = state.get("extracted_numbers", {})
         msgs       = state.get("debate_obs_messages", [])
 
-        # 첫 메시지 — 초기화 (이미지 재첨부)
+        # 첫 메시지 — 초기화 (이미지 재첨부 없음 — context 절약)
         if not msgs:
             print(f"\n  🔍 토론 Observer [라운드 {rnd}] 초기화...")
 
-            img_b64    = await asyncio.to_thread(image_to_base64, state["image_path"])
-            claims_str = json.dumps(claims, ensure_ascii=False, indent=2)
-            nums_str   = json.dumps(nums, ensure_ascii=False)[:1000]
-            rag_hint   = state.get("rag_hint", "")
-            rag_section = f"\n## MisViz RAG 유사 사례:\n{rag_hint[:600]}\n" if rag_hint else ""
+            # nums는 핵심 수치만 (context 절약)
+            key_nums = {k: v for k, v in nums.items()
+                        if k in ("data_values", "x_labels", "y_min", "y_max",
+                                 "y_ticks", "pie_pcts", "visual_ratios")}
+            nums_str = json.dumps(key_nums, ensure_ascii=False)[:600]
 
-            # 도전 항목과 새 가설을 분리해서 명확히 표시
+            # claims는 핵심 필드만
+            claims_slim = [
+                {k: c[k] for k in ("type", "target_error", "reason", "hypothesis",
+                                    "suggested_tool", "visual_evidence",
+                                    "challenge_strength") if k in c}
+                for c in claims
+            ]
+            claims_str = json.dumps(claims_slim, ensure_ascii=False, indent=2)[:800]
+
+            rag_hint    = state.get("rag_hint", "")
+            rag_section = f"\n## MisViz RAG:\n{rag_hint[:300]}\n" if rag_hint else ""
+
+            # 도전 항목과 새 가설 분리
             challenges    = [c for c in claims if c.get("type") == "challenge"]
             new_hyps      = [c for c in claims if c.get("type") != "challenge"]
             challenge_txt = "\n".join(
@@ -1067,63 +1148,54 @@ Take your time and think step by step before forming your challenges and hypothe
 
             system = textwrap.dedent(f"""
 You are the chart fraud investigator defending your findings in Debate Round {rnd}/{MAX_DEBATE_ROUNDS}.
-An adversarial auditor has challenged your work. Respond with evidence.
 {rag_section}
-## Extracted numbers from chart:
+## Chart: {chart_type} | {image_desc[:200]}
+
+## Key numbers:
 {nums_str}
 
-## Your response strategy — MUST follow all 3 steps:
+## Response strategy:
 
 ### 1. DEFEND or CONCEDE each challenge
-For each challenge, call a tool to get hard evidence, then:
-- If tool confirms your finding: write "[DEFENDED] <key>: <tool result proves it>"
-- If tool disproves your finding: write "[CONCEDED] <key>: <evidence shows I was wrong>"
+Call a tool → write "[DEFENDED] <key>" or "[CONCEDED] <key>: why"
 
-### 2. INVESTIGATE each new hypothesis
-The adversary spotted potential errors you missed. For each:
-- Call the suggested tool (or the most relevant one) with actual values from the chart
-- Write "[CONFIRMED NEW] <key>" or "[RULED OUT] <key>"
+### 2. INVESTIGATE new hypotheses
+Call the suggested tool → write "[CONFIRMED NEW] <key>" or "[RULED OUT] <key>"
 
-### 3. Output final JSON after all tools are called:
+### 3. Final JSON:
 ```json
 {{
-  "newly_confirmed": ["keys proven by tools this round"],
-  "conceded": ["keys you were wrong about"],
-  "still_suspected": ["keys from before that remain valid"],
-  "observer_summary": "what changed this round and why"
+  "newly_confirmed": [],
+  "conceded": [],
+  "still_suspected": [],
+  "observer_summary": ""
 }}
 ```
-
-## Rules:
-- Call tools BEFORE writing the final JSON
-- Use actual numbers from the chart — not estimates
-- Do NOT concede without tool evidence proving you wrong
-- Do NOT maintain a finding if the tool clearly disproves it
+Rules: call tools first · use actual numbers · no guessing
 """).strip()
 
-            human_content: list[Any] = [
-                {"type": "text", "text": (
-                    f"Chart type: {chart_type}\n"
-                    f"Image description: {image_desc[:600]}\n"
-                    f"My current suspected errors: {suspected}\n\n"
-                    f"## Adversary's challenges to my existing findings:\n{challenge_txt}\n\n"
-                    f"## Adversary's new hypotheses I may have missed:\n{new_hyp_txt}\n\n"
-                    "Inspect the chart image carefully. "
-                    "Call tools to defend/concede each challenge and investigate each new hypothesis. "
-                    "Start immediately with the first tool call."
-                )},
-                {"type": "image_url", "image_url": {"url": f"data:image/png;base64,{img_b64}"}},
-            ]
-            msgs = [SystemMessage(content=system), HumanMessage(content=human_content)]
+            human_txt = (
+                f"Suspected errors: {suspected}\n\n"
+                f"## Challenges:\n{challenge_txt}\n\n"
+                f"## New hypotheses:\n{new_hyp_txt}\n\n"
+                "Call tools to defend/investigate. Start with the first tool call."
+            )
+            msgs = [SystemMessage(content=system), HumanMessage(content=human_txt)]
 
         used = sum(1 for m in msgs if isinstance(m, ToolMessage))
         print(f"     [토론 Observer LLM R{rnd}] 메시지:{len(msgs)} / 도구결과:{used}")
 
-        # 루프 중 — 매 라운드 독려 메시지 갱신 (이미 호출된 도구 목록 포함)
+        # 루프 중 — 독려 메시지 갱신 (이전 독려 메시지 제거 후 새 것으로 교체)
         if used > 0:
             already_called = list(state.get("tool_evidence", {}).keys())
             already_str = ", ".join(already_called) if already_called else "none"
-            msgs = list(msgs) + [HumanMessage(content=(
+            msgs = list(msgs)
+            # 직전에 추가된 독려 메시지가 있으면 교체 (중복 누적 방지)
+            if (msgs and isinstance(msgs[-1], HumanMessage)
+                    and isinstance(msgs[-1].content, str)
+                    and msgs[-1].content.startswith("Good.")):
+                msgs = msgs[:-1]
+            msgs = msgs + [HumanMessage(content=(
                 f"Good. {used} tool(s) called so far.\n"
                 f"Already called (do NOT call these again): {already_str}\n"
                 "If all challenges and new hypotheses are addressed, output the final JSON now. "
@@ -1219,22 +1291,28 @@ The adversary spotted potential errors you missed. For each:
                     if key in MISLEADER_KEYS and key not in newly_confirmed:
                         newly_confirmed.append(key)
 
-        # 도구 증거에서 자동 추출 (safety net)
+        # no_progress 판단: 이번 라운드 토론에서 새로 확정/기각된 것만 기준
+        no_progress = (len(newly_confirmed) == 0 and len(conceded) == 0)
+
+        # agreed_errors = 실제 토론 합의 항목만 기록 (safety net 제외)
+        # → self_critique에서 debate_consensus 점수(0.8)를 정확하게 부여하기 위함
+        debate_agreed_this_round = list(newly_confirmed)
+
+        # 도구 증거에서 자동 추출 (safety net) — suspected 보강용으로만 사용
         newly_from_tools = self._extract_from_evidence([], tool_ev)
         for k in newly_from_tools:
-            if k not in newly_confirmed:
-                newly_confirmed.append(k)
+            if k not in suspected:
+                suspected.append(k)
+                print(f"     📌 [토론R{rnd}] {k} 추가 (도구증거)")
 
         for k in newly_confirmed:
             if k not in suspected:
                 suspected.append(k)
-                print(f"     📌 [토론R{rnd}] {k} 추가")
+                print(f"     📌 [토론R{rnd}] {k} 추가 (토론합의)")
         for k in conceded:
             if k in suspected:
                 suspected.remove(k)
                 print(f"     ❌ [토론R{rnd}] {k} 기각")
-
-        no_progress = (len(newly_confirmed) == 0 and len(conceded) == 0)
 
         adv_summary = (
             " | ".join(c.get("hypothesis", c.get("reason", c.get("challenge", "")))[:60] for c in claims[:3])
@@ -1246,7 +1324,7 @@ The adversary spotted potential errors you missed. For each:
             "round":                rnd,
             "adv_claims_summary":   adv_summary[:200],
             "obs_response_summary": obs_summary[:200],
-            "agreed_errors":        newly_confirmed,
+            "agreed_errors":        debate_agreed_this_round,  # 토론 합의만 (safety net 제외)
             "dismissed":            conceded,
         }
         history.append(round_record)
@@ -1280,72 +1358,17 @@ The adversary spotted potential errors you missed. For each:
         suspected   = list(state.get("suspected_misleaders", []))
         math_checks = state.get("math_checks", {})
         tool_ev     = state.get("tool_evidence", {})
-        evidence    = dict(tool_ev)
-        removed:    list[str] = []
 
-        print(f"\n  🤔 자기비판 + 최종 판정 ({len(suspected)}개)...")
+        print(f"\n  🤔 최종 판정 ({len(suspected)}개)...")
 
-        # ── 1단계: 필터링 ──────────────────────────────────
-        for key in list(suspected):
-            if self._math_confirms(key, math_checks):
-                print(f"     ✅ {key}: 수학 도구 확인 (유지)")
-                continue
-
-            already = any(
-                self._tool_evidence_supports(key, tn, tv)
-                for tn, tv in tool_ev.items()
-            )
-            if already:
-                print(f"     ✅ {key}: 기존 도구 증거 지지 (유지)")
-                continue
-
-            tool_name = self._key_to_tool(key)
-            if tool_name and tool_name in tool_ev:
-                try:
-                    ev = json.loads(tool_ev[tool_name])
-                    if self._tool_clearly_negative(key, tool_name, ev):
-                        print(f"     ❌ {key}: 도구 명확히 정상 → 제거")
-                        suspected.remove(key)
-                        removed.append(key)
-                    else:
-                        print(f"     ⚠️ {key}: 도구 불명확 (유지)")
-                except Exception:
-                    print(f"     ⚠️ {key}: 증거 파싱 오류 (유지)")
-                continue
-
-            if tool_name and tool_name in OBSERVER_TOOLS_BY_NAME:
-                tool_args = self._infer_tool_args(tool_name, state)
-                if tool_args and not all(
-                    (v is None or v == [] or v == {}) for v in tool_args.values()
-                ):
-                    try:
-                        result = await asyncio.to_thread(
-                            OBSERVER_TOOLS_BY_NAME[tool_name].invoke, tool_args
-                        )
-                        if not isinstance(result, str):
-                            result = json.dumps(result, ensure_ascii=False)
-                        evidence[tool_name] = result[:400]
-                        ev = json.loads(result)
-                        if self._tool_clearly_negative(key, tool_name, ev):
-                            print(f"     ❌ {key}: 검증 후 정상 → 제거")
-                            suspected.remove(key)
-                            removed.append(key)
-                        else:
-                            print(f"     ✅ {key}: 검증 통과 또는 불명확 (유지)")
-                    except Exception as e:
-                        print(f"     ⚠️ {key}: 도구 오류 ({e}) → 유지")
-                    continue
-
-            print(f"     ⚠️ {key}: 검증 불가 (유지)")
-
-        print(f"     → 필터링 완료: {len(removed)}개 제거 | 남은 의심: {suspected}")
-
-        # ── 2단계: 최종 misleaders 결정 (최대 5개) ──────────
+        # ── 1단계: 토론 합의 목록 수집 ───────────────────────
+        # 증거 없는 항목 제거는 토론의 conceded 결과로 대체
         debate_history = state.get("debate_history", [])
         debate_agreed: set[str] = set()
         for h in debate_history:
             debate_agreed.update(h.get("agreed_errors", []))
 
+        # ── 2단계: 최종 misleaders 결정 (최대 5개, 우선순위 정렬) ─
         # 강도 순 정렬: math확인 > 토론합의 > 도구증거 > 의심
         def _priority(k: str) -> int:
             if self._math_confirms(k, math_checks):
@@ -1359,77 +1382,53 @@ The adversary spotted potential errors you missed. For each:
         final = sorted(suspected, key=_priority)[:5]
 
         # ── 3단계: 규칙 기반 verdict ──────────────────────
-        math_confirmed_set = {k for k in final if self._math_confirms(k, math_checks)}
+        # 오류: 수학 또는 토론으로 확증된 항목이 있을 때
+        # 경고: 의심 항목이 있지만 수학/토론 확증은 없을 때
+        # 정상: 최종 목록이 비어 있을 때
+        math_confirmed_set  = {k for k in final if self._math_confirms(k, math_checks)}
         debate_confirmed_set = {k for k in final if k in debate_agreed}
-        tool_confirmed_set = {
-            k for k in final
-            if any(self._tool_evidence_supports(k, tn, tv) for tn, tv in tool_ev.items())
-        }
 
         if math_confirmed_set or debate_confirmed_set:
             verdict = "오류"
-        elif tool_confirmed_set or len(final) >= 2:
-            verdict = "경고"
         elif final:
             verdict = "경고"
         else:
             verdict = "정상"
 
         # ── 4단계: recheck 조건 (관찰자가 도구 미호출 시만) ─
-        obs_tools     = state.get("observer_tool_call_count", 0)
-        iteration     = state.get("iteration", 0)
-        needs_recheck = False
+        obs_tools      = state.get("observer_tool_call_count", 0)
+        iteration      = state.get("iteration", 0)
+        needs_recheck  = False
         recheck_reason = ""
         if obs_tools == 0 and iteration < 1 and not state.get("early_exit"):
             needs_recheck  = True
             recheck_reason = "FULL_RESTART: 관찰자 도구 미실행"
 
-        # ── 5단계: 설명 생성 ─────────────────────────────
-        if final:
-            error_names = [MISLEADER_TAXONOMY.get(k, {}).get("name", k) for k in final]
-            evidence_tags = []
-            for k in final:
-                tags = []
-                if self._math_confirms(k, math_checks):
-                    tags.append("수학검증")
-                if k in debate_agreed:
-                    tags.append("토론합의")
-                if tags:
-                    evidence_tags.append(f"{k}({','.join(tags)})")
-            explanation = (
-                f"발견된 오류: {', '.join(error_names)}. "
-                f"증거: {', '.join(evidence_tags) if evidence_tags else '도구 검증'}. "
-                f"판정: {verdict}."
-            )
-        else:
-            explanation = "모든 의심 항목이 도구 검증을 통해 정상으로 확인되었습니다."
-
-        # 신뢰도 구조 (confidence scorer용)
+        # ── 5단계: 신뢰도 구조 (confidence scorer용) ────────
+        # 설명(explanation)은 reporter가 직접 생성
         confidence = {
             k: {
-                "score":          0.9 if self._math_confirms(k, math_checks) else
-                                  0.8 if k in debate_agreed else
-                                  0.65 if any(self._tool_evidence_supports(k, tn, tv)
-                                              for tn, tv in tool_ev.items()) else 0.5,
-                "math_confirmed": self._math_confirms(k, math_checks),
+                "score":            0.9 if self._math_confirms(k, math_checks) else
+                                    0.8 if k in debate_agreed else
+                                    0.65 if any(self._tool_evidence_supports(k, tn, tv)
+                                                for tn, tv in tool_ev.items()) else 0.5,
+                "math_confirmed":   self._math_confirms(k, math_checks),
                 "debate_consensus": k in debate_agreed,
-                "reason": "auto-scored by self_critique",
+                "reason":           "auto-scored by self_critique",
             }
             for k in final
         }
 
         print(f"     → 최종: {final} | {verdict} | 재검토:{needs_recheck}")
-        conv = log_conversation(state.get("conversation", []), "🤔 자기비판+판정",
-            f"판결:{verdict} | 확정:{final} | 제거:{removed}")
+        conv = log_conversation(state.get("conversation", []), "🤔 최종판정",
+            f"판결:{verdict} | 확정:{final}")
 
         return {
             **state,
             "suspected_misleaders":  suspected,
             "final_misleaders":      final,
-            "tool_evidence":         evidence,
-            "self_critique_removed": removed,
+            "self_critique_removed": [],
             "verdict":               verdict,
-            "explanation":           explanation,
             "confidence":            confidence,
             "needs_recheck":         needs_recheck,
             "recheck_reason":        recheck_reason,
@@ -1465,11 +1464,15 @@ Available keys: {', '.join(sorted(MISLEADER_KEYS))}
                 "Re-analyze this chart for deliberate manipulation. Find ALL deceptions.",
                 state["image_path"], system, 800, 0.1, False,   # use_thinking=False
             )
-            p = parse_json(raw)
-            new_suspected = [m for m in p.get("suspected", []) if m in MISLEADER_KEYS]
-            confirmed     = [m for m in p.get("confirmed", []) if m in MISLEADER_KEYS]
-            new_found     = [m for m in p.get("new", [])       if m in MISLEADER_KEYS]
-            updated = list(dict.fromkeys(confirmed + new_found + new_suspected))
+            p = parse_json(raw) or {}
+            if not p:
+                print(f"     ⚠️ 완전재분석 JSON 파싱 실패 → 기존 suspected 유지")
+                updated = list(state.get("suspected_misleaders", []))
+            else:
+                new_suspected = [m for m in p.get("suspected", []) if m in MISLEADER_KEYS]
+                confirmed     = [m for m in p.get("confirmed", []) if m in MISLEADER_KEYS]
+                new_found     = [m for m in p.get("new", [])       if m in MISLEADER_KEYS]
+                updated = list(dict.fromkeys(confirmed + new_found + new_suspected))
             print(f"     → 완전재분석: {updated}")
         else:
             system = textwrap.dedent(f"""
@@ -1484,13 +1487,17 @@ Recheck: {reason} | Targets: {state.get('suspected_misleaders')}
                 f"Recheck: {reason}\nVerify: {state['suspected_misleaders']}",
                 state["image_path"], system, 600, 0.1, False,   # use_thinking=False
             )
-            p = parse_json(raw)
-            confirmed = [m for m in p.get("confirmed", []) if m in MISLEADER_KEYS]
-            dismissed = [m for m in p.get("dismissed", []) if m in MISLEADER_KEYS]
-            new_found = [m for m in p.get("new", [])       if m in MISLEADER_KEYS]
-            updated   = list(dict.fromkeys(
-                [m for m in state["suspected_misleaders"] if m not in dismissed] + new_found
-            ))
+            p = parse_json(raw) or {}
+            if not p:
+                print(f"     ⚠️ 재검토 JSON 파싱 실패 → 기존 suspected 유지")
+                updated = list(state.get("suspected_misleaders", []))
+            else:
+                confirmed = [m for m in p.get("confirmed", []) if m in MISLEADER_KEYS]
+                dismissed = [m for m in p.get("dismissed", []) if m in MISLEADER_KEYS]
+                new_found = [m for m in p.get("new", [])       if m in MISLEADER_KEYS]
+                updated   = list(dict.fromkeys(
+                    [m for m in state["suspected_misleaders"] if m not in dismissed] + new_found
+                ))
 
         conv = log_conversation(state.get("conversation", []), "🔄 재검토", f"확인:{updated}")
         return {**state, "suspected_misleaders": updated, "needs_recheck": False, "conversation": conv}
@@ -1656,7 +1663,10 @@ Recheck: {reason} | Targets: {state.get('suspected_misleaders')}
             if lc.get("is_log") and not nums.get("log_labeled"):
                 checks["log_scale"] = {**lc, "unlabeled": True}
 
+        # visual_areas 우선, 없으면 visual_ratios 로 대체 (LLM이 상대 비율을 더 신뢰성 있게 추정)
         va = [v for v in (nums.get("visual_areas") or []) if isinstance(v, (int, float))]
+        if not va:
+            va = [v for v in (nums.get("visual_ratios") or []) if isinstance(v, (int, float))]
         if va and data_vals and len(va) == len(data_vals):
             checks["area"] = mt.check_area_distortion(data_vals, va)
 
@@ -1747,63 +1757,7 @@ Recheck: {reason} | Targets: {state.get('suspected_misleaders')}
         }
         return mapping.get(key, "")
 
-    def _infer_tool_args(self, tool_name: str, state: AgentState) -> dict:
-        nums = state.get("extracted_numbers", {})
-        defaults: dict[str, dict] = {
-            "tool_check_axis_truncation": {
-                "y_min":    nums.get("y_min") if nums.get("y_min") is not None else 0,
-                "y_max":    nums.get("y_max") if nums.get("y_max") is not None else 100,
-                "data_min": min(nums.get("data_values", [0]) or [0]),
-            },
-            "tool_check_label_value_match": {
-                "label_values":  nums.get("data_values", []),
-                "visual_ratios": nums.get("visual_ratios", []),
-                "y_min":         nums.get("y_min") if nums.get("y_min") is not None else 0,
-                "y_max":         nums.get("y_max") if nums.get("y_max") is not None else 100,
-            },
-            "tool_check_selective_annotation": {
-                "annotated_indices": nums.get("annotated_indices", []),
-                "all_values":        nums.get("data_values", []),
-            },
-            "tool_check_aspect_ratio": {
-                "width_px":     nums.get("chart_width_px") or 400,
-                "height_px":    nums.get("chart_height_px") or 300,
-                "x_data_range": 10,
-                "y_data_range": nums.get("y_max") if nums.get("y_max") is not None else 100,
-            },
-            "tool_check_data_gap": {
-                "shown_x_values": nums.get("x_labels", []),
-            },
-            "tool_check_baseline_alignment": {
-                "bar_start_values": nums.get("bar_start_values", [0]),
-            },
-            "tool_check_color_emphasis_bias": {
-                "highlighted_indices": nums.get("highlighted_indices", []),
-                "all_values":          nums.get("data_values", []),
-            },
-            "tool_check_bin_widths": {
-                "bin_edges":        nums.get("bin_edges", []),
-                "visual_widths_px": nums.get("visual_bin_widths_px", []),
-            },
-            "tool_check_tick_intervals": {
-                "ticks": nums.get("y_ticks", []),
-            },
-            "tool_check_pie_sum": {
-                "percentages": nums.get("pie_pcts", []),
-            },
-            "tool_check_pie_angles": {
-                "pie_pcts":       nums.get("pie_pcts", []),
-                "pie_angles_deg": nums.get("pie_angles_deg", []),
-            },
-            "tool_check_log_scale": {
-                "ticks": nums.get("y_ticks", []),
-            },
-            "tool_check_area_distortion": {
-                "values":       nums.get("data_values", []),
-                "visual_areas": nums.get("visual_areas", []),
-            },
-        }
-        return defaults.get(tool_name, {})
+    # _infer_tool_args 삭제 — 2단계 _build_args 가 동일 역할을 담당하며 호출 참조 없음
 
     def _update_suspected_from_math(self, suspected: list[str], math_checks: dict) -> list[str]:
         result = list(suspected)
@@ -1844,6 +1798,9 @@ Recheck: {reason} | Targets: {state.get('suspected_misleaders')}
             if tool_name == "tool_check_color_emphasis_bias" and ev.get("emphasis_biased"):       _add("selective_emphasis")
             if tool_name == "tool_check_slope_distortion"    and ev.get("distorted"):              _add("slope_distortion")
             if tool_name == "tool_check_misleading_annotation" and ev.get("misleading"):           _add("misleading_annotation")
+            if tool_name == "tool_check_cherry_pick_range"   and ev.get("cherry_pick_detected"):  _add("cherry_picking")
+            if tool_name == "tool_check_unit_switch"         and ev.get("unit_switch_detected"):  _add("unit_switch")
+            if tool_name == "tool_check_cumulative_vs_period" and ev.get("misleading"):            _add("cumulative_misrepresentation")
         return result
 
     async def _rag_refine(self, suspected, chart_type, image_desc, tool_evidence, rag_hint) -> list[str]:
@@ -1904,8 +1861,10 @@ Output JSON only:
             ),
             "non_aligned_baseline":      lambda c: c.get("baseline", {}).get("misaligned", False),
             "cherry_picking":            lambda c: c.get("data_gap", {}).get("gaps_detected", False),
-            "inconsistent_binning":      lambda c: c.get("bin_widths", {}).get("inconsistent", False),
-            "aspect_ratio_manipulation": lambda c: c.get("aspect_ratio", {}).get("aspect_manipulated", False),
+            "inconsistent_binning":          lambda c: c.get("bin_widths", {}).get("inconsistent", False),
+            "aspect_ratio_manipulation":     lambda c: c.get("aspect_ratio", {}).get("aspect_manipulated", False),
+            "unit_switch":                   lambda c: c.get("unit_switch", {}).get("unit_switch_detected", False),
+            "cumulative_misrepresentation":  lambda c: c.get("cumulative", {}).get("misleading", False),
         }
         checker = mapping.get(key)
         return checker(math_checks) if checker else False
@@ -1927,6 +1886,8 @@ Output JSON only:
                 "inconsistent_binning":      ("tool_check_bin_widths",           "inconsistent",        True),
                 "non_aligned_baseline":      ("tool_check_baseline_alignment",   "misaligned",          True),
                 "cherry_picking":            ("tool_check_data_gap",             "gaps_detected",       True),
+                "unit_switch":               ("tool_check_unit_switch",           "unit_switch_detected", True),
+                "cumulative_misrepresentation": ("tool_check_cumulative_vs_period", "misleading",         True),
             }
             if key not in pairs or tool_name != pairs[key][0]:
                 return False
@@ -1955,6 +1916,9 @@ Output JSON only:
             "tool_check_color_emphasis_bias":      lambda e: e.get("emphasis_biased") is False,
             "tool_check_slope_distortion":         lambda e: e.get("distorted") is False,
             "tool_check_misleading_annotation":    lambda e: e.get("misleading") is False,
+            "tool_check_cherry_pick_range":        lambda e: e.get("cherry_pick_detected") is False,
+            "tool_check_unit_switch":              lambda e: e.get("unit_switch_detected") is False,
+            "tool_check_cumulative_vs_period":     lambda e: e.get("misleading") is False,
         }
         checker = clear_negative.get(tool_name)
         if not checker:
@@ -1991,7 +1955,7 @@ Output JSON only:
             base  = 0.60
             bonus = min(obs_tools * 0.04, 0.20) + min(math_tools * 0.02, 0.10)
 
-        overall = round(min(base + bonus, 0.97), 3)
+        overall = round(min(base + bonus, 1.0), 3)
         return {
             "score": overall,
             "grade": DistortionDetectorAgent._score_grade(overall),

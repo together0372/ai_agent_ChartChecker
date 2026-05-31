@@ -374,6 +374,30 @@ MISLEADER_TAXONOMY: dict[str, dict] = {
         "severity_weight": 0.75,
     },
 
+    # ── I. 추가 탐지 유형 ────────────────────────────────
+    "unit_switch": {
+        "name": "단위 불일치 (Unit Switch / Inconsistent Units)",
+        "desc": "같은 차트 내에서 단위가 일관되지 않게 혼용됨. "
+                "억원과 조원을 섞거나, %(퍼센트)와 %p(퍼센트포인트)를 혼동하도록 표시. "
+                "독자가 수치 간 직접 비교를 잘못 해석하게 유도.",
+        "detection": "각 데이터 포인트 또는 축 레이블의 단위가 동일한지 확인. "
+                     "도구: tool_check_unit_switch(units)",
+        "example": "막대 3개: 50억원, 200억원, 1.2조원 — 마지막만 단위가 달라 비교 왜곡",
+        "chart_types": ["막대차트", "선차트", "파이차트", "모든 차트"],
+        "severity_weight": 0.75,
+    },
+    "cumulative_misrepresentation": {
+        "name": "누적-기간 혼동 (Cumulative vs Period Misrepresentation)",
+        "desc": "누적(cumulative) 수치를 기간별(period) 수치처럼 표시해 성장을 과장. "
+                "월별 신규 가입자가 아닌 누적 가입자를 월별 성과처럼 제시하거나, "
+                "반대로 기간 수치를 누적처럼 표현해 변화폭을 축소.",
+        "detection": "데이터가 단조 증가(한 번도 감소 없음)인데 기간 데이터로 표시된 경우. "
+                     "도구: tool_check_cumulative_vs_period(values, declared_type='period')",
+        "example": "누적 앱 다운로드(100→250→480→800만)를 '이번 달 다운로드'처럼 표시 → 성장률 극적 과장",
+        "chart_types": ["막대차트", "선차트", "영역차트"],
+        "severity_weight": 0.80,
+    },
+
     # ── G. 기울기·주석 왜곡 ──────────────────────────────
     "slope_distortion": {
         "name": "기울기 왜곡 (Slope Distortion)",
@@ -447,6 +471,11 @@ MISVIZ_LABEL_TO_KEY: dict[str, str] = {
     "cropped_visual_context":          "cropped_visual_context",
     "shape_encoding_distortion":       "area_distortion",
     "stacked_chart_misuse":            "stacked_chart_misuse",
+    "unit_switch":                     "unit_switch",
+    "inconsistent_units":              "unit_switch",
+    "mixed_units":                     "unit_switch",
+    "cumulative_misrepresentation":    "cumulative_misrepresentation",
+    "cumulative_vs_period":            "cumulative_misrepresentation",
 }
 
 # ─────────────────────────────────────────────────────────

@@ -216,20 +216,52 @@ class MathTools:
         }
 
     @staticmethod
-    def check_area_distortion(values: list[float], visual_areas: list[float]) -> dict:
-        if len(values) < 2 or len(values) != len(visual_areas):
-            return {"checked": False, "note": "데이터 부족 (values와 visual_areas 개수 동일해야 함)"}
+    def check_area_distortion(values: list[float], visual_sizes: list[float]) -> dict:
+        """
+        버블/산점도에서 원 크기가 면적이 아닌 반지름에 비례하는지 검증.
+
+        visual_sizes: 절대 픽셀 불필요 — 상대 비율로 전달
+                      예) [2.0, 1.0, 3.0] = 첫 번째 원이 두 번째의 2배, 세 번째의 2/3
+                      visual_ratios, visual_areas 어느 쪽으로 전달해도 동작
+        """
+        if len(values) < 2:
+            return {"checked": False, "note": "데이터 부족 (values 2개 이상 필요)"}
+        if len(visual_sizes) < 2 or len(visual_sizes) != len(values):
+            return {"checked": False, "note": "visual_sizes 데이터 부족 또는 길이 불일치"}
+
+        base_v = values[0]
+        base_a = visual_sizes[0]
+        if base_v == 0 or base_a == 0:
+            return {"checked": False, "note": "기준값(첫 번째 요소)이 0 — 비교 불가"}
+
         errors = []
-        base_v, base_a = values[0], visual_areas[0]
         for i in range(1, len(values)):
-            expected_ratio = values[i] / base_v
-            actual_ratio = visual_areas[i] / base_a
-            if abs(actual_ratio - expected_ratio ** 2) < abs(actual_ratio - expected_ratio):
-                errors.append({"idx": i, "suspicion": "반지름 비례 사용(면적 왜곡)"})
+            expected_ratio = values[i] / base_v       # 값 비율 (올바른 면적 비례 시 시각 비율과 같아야 함)
+            actual_ratio   = visual_sizes[i] / base_a  # 실제 시각 크기 비율
+
+            if expected_ratio == 1.0:
+                continue  # 값이 동일하면 비교 의미 없음
+
+            # 올바른 방식 (면적 비례): visual_area ∝ value   → actual_ratio ≈ expected_ratio
+            # 잘못된 방식 (반지름 비례): radius ∝ value → area ∝ value² → actual_ratio ≈ expected_ratio²
+            dist_correct = abs(actual_ratio - expected_ratio)
+            dist_radius  = abs(actual_ratio - expected_ratio ** 2)
+
+            if dist_radius < dist_correct:
+                errors.append({
+                    "idx":          i,
+                    "value_ratio":  round(expected_ratio, 3),
+                    "visual_ratio": round(actual_ratio, 3),
+                    "suspicion":    "반지름 비례 사용 — 큰 값이 실제보다 과장되어 보임",
+                })
+
         return {
             "distortion_detected": bool(errors),
             "errors":              errors,
-            "note":                "버블 크기가 값의 제곱에 비례 → 면적 왜곡" if errors else "정상",
+            "note": (
+                "원 크기가 값의 제곱에 비례(반지름 비례) → 큰 값일수록 과장"
+                if errors else "정상 (면적 비례)"
+            ),
         }
 
     @staticmethod
@@ -884,6 +916,268 @@ class MathTools:
             "note": (
                 f"강조 편향 감지: {direction} (z={round(z,2)}) → visual_saliency_hacking"
                 if biased else "색상 강조 편향 없음"
+            ),
+        }
+
+
+    @staticmethod
+    def check_cherry_pick_range(
+        shown_values: list[float],
+        full_start_label: str = "",
+        full_end_label: str = "",
+        shown_start_label: str = "",
+        shown_end_label: str = "",
+    ) -> dict:
+        """
+        표시된 시간 범위가 유리한 구간만 선택(체리피킹)했는지 탐지.
+
+        탐지 패턴:
+          1. 시작점 ≈ 최저점 & 끝점 ≈ 최고점 → 상승 narrative 조작
+          2. 시작점 ≈ 최고점 & 끝점 ≈ 최저점 → 하락 narrative 조작
+          3. 전체 범위 대비 표시 범위가 지나치게 짧음 (레이블 제공 시)
+          4. 내부에 큰 반등/하락이 있지만 시작~끝만 보면 단순 추세처럼 보이는 경우
+        """
+        vals = [v for v in (shown_values or []) if isinstance(v, (int, float))]
+        if len(vals) < 3:
+            return {"checked": False, "note": "데이터 부족 (최소 3개 필요)"}
+
+        v_min   = min(vals)
+        v_max   = max(vals)
+        v_range = v_max - v_min
+        if v_range == 0:
+            return {"checked": True, "cherry_picked": False, "note": "데이터 변화 없음"}
+
+        start_val = vals[0]
+        end_val   = vals[-1]
+
+        # 15% 이내이면 "근처"로 판정
+        start_near_min = (start_val - v_min) / v_range < 0.15
+        end_near_max   = (v_max - end_val)   / v_range < 0.15
+        start_near_max = (v_max - start_val) / v_range < 0.15
+        end_near_min   = (end_val - v_min)   / v_range < 0.15
+
+        if start_near_min and end_near_max:
+            cherry_picked = True
+            direction     = "상승 체리피킹 (최저점 시작 → 최고점 끝)"
+        elif start_near_max and end_near_min:
+            cherry_picked = True
+            direction     = "하락 체리피킹 (최고점 시작 → 최저점 끝)"
+        else:
+            cherry_picked = False
+            direction     = "편향 없음"
+
+        # 내부 변동성 은폐 탐지 — 최대 구간 변화가 전체 변화의 2배 이상이면 의심
+        trend_actual     = abs(end_val - start_val)
+        max_single_swing = max(abs(vals[i + 1] - vals[i]) for i in range(len(vals) - 1))
+        hidden_volatility = max_single_swing > trend_actual * 2.0
+
+        # 전체 범위 레이블 정보 (있을 때만)
+        range_info = ""
+        if full_start_label and full_end_label and shown_start_label and shown_end_label:
+            range_info = (
+                f"전체 범위 {full_start_label}~{full_end_label} 중 "
+                f"{shown_start_label}~{shown_end_label}만 표시"
+            )
+
+        severity = "높음" if cherry_picked else "낮음"
+        note_parts = []
+        if cherry_picked:
+            note_parts.append(f"체리피킹 감지: {direction}")
+        if range_info:
+            note_parts.append(range_info)
+        if hidden_volatility:
+            note_parts.append("내부 변동성 은폐 의심")
+
+        return {
+            "cherry_picked":     cherry_picked,
+            "bias_direction":    direction,
+            "start_value":       round(start_val, 3),
+            "end_value":         round(end_val, 3),
+            "min_value":         round(v_min, 3),
+            "max_value":         round(v_max, 3),
+            "hidden_volatility": hidden_volatility,
+            "range_info":        range_info,
+            "severity":          severity,
+            "note": (
+                " | ".join(note_parts)
+                if note_parts else "정상 (시작/끝점 편향 없음)"
+            ),
+        }
+
+    @staticmethod
+    def check_unit_switch(
+        units: list[str],
+        values: list[float] = None,
+    ) -> dict:
+        """
+        같은 차트 내에서 단위가 일관성 없이 혼용되는지 탐지.
+
+        탐지 패턴:
+          1. 화폐 스케일 혼합 (억원 + 조원, 달러 + 원)
+          2. 이질 단위 혼합 (% + 절댓값, 명 + 건)
+          3. %와 %p(퍼센트포인트) 혼용
+        """
+        if not units:
+            return {"checked": False, "note": "단위 데이터 없음"}
+
+        cleaned = [str(u).strip() for u in units if u is not None and str(u).strip()]
+        if not cleaned:
+            return {"checked": False, "note": "유효한 단위 없음"}
+
+        # ── 단위 카테고리 분류 ────────────────────────────────
+        KR_MONEY_SCALES = ["조원", "억원", "만원", "원", "billion", "million", "trillion",
+                           "조달러", "억달러", "만달러", "달러", "$"]
+        PERCENT       = {"%", "퍼센트", "percent", "pct"}
+        PERCENT_POINT = {"%p", "%포인트", "pp", "percentage point", "퍼센트포인트"}
+        COUNT_UNITS   = ["억명", "만명", "명", "만건", "건", "억개", "만개", "개", "회", "곳"]
+
+        def _categorize(u: str) -> str:
+            ul = u.lower()
+            if ul in PERCENT:       return "percent"
+            if ul in PERCENT_POINT: return "percent_point"
+            for s in KR_MONEY_SCALES:
+                if ul == s.lower() or ul.endswith(s.lower()):
+                    return "money"
+            for s in COUNT_UNITS:
+                if ul.endswith(s):
+                    return "count"
+            return "other"
+
+        categories   = [_categorize(u) for u in cleaned]
+        unique_cats  = set(c for c in categories if c != "other")
+
+        # ── 화폐 스케일 혼합 체크 ─────────────────────────────
+        money_scales = []
+        scale_order  = ["조원", "억원", "만원", "원"]
+        for u in cleaned:
+            ul = u.lower()
+            for s in scale_order:
+                if ul.endswith(s.lower()):
+                    money_scales.append(s)
+                    break
+        scale_mixed = len(set(money_scales)) > 1
+
+        # ── 카테고리 혼합 체크 ───────────────────────────────
+        # percent + percent_point 혼용은 별도 플래그
+        pct_mixed = "percent" in unique_cats and "percent_point" in unique_cats
+        # 완전히 다른 단위 카테고리 혼합
+        cat_mixed = len(unique_cats - {"percent", "percent_point"}) > 0 and (
+            "percent" in unique_cats or "percent_point" in unique_cats
+        ) or len({c for c in unique_cats if c in ("money", "count")}) > 1
+
+        mixed = scale_mixed or cat_mixed or pct_mixed
+
+        if pct_mixed:
+            issue = "%(퍼센트)와 %p(퍼센트포인트) 혼용 → 의미가 다른 단위를 같이 표시"
+        elif cat_mixed:
+            issue = f"이질 단위 혼합: {', '.join(sorted(unique_cats))}"
+        elif scale_mixed:
+            issue = f"화폐 스케일 혼합: {', '.join(sorted(set(money_scales)))}"
+        else:
+            issue = "단위 일관성 있음"
+
+        severity = "높음" if cat_mixed else "중간" if (scale_mixed or pct_mixed) else "정상"
+
+        return {
+            "unit_switch_detected": mixed,
+            "units_found":          list(set(cleaned)),
+            "categories":           list(unique_cats) if unique_cats else ["other"],
+            "scale_mixed":          scale_mixed,
+            "category_mixed":       cat_mixed,
+            "pct_vs_pctp_mixed":    pct_mixed,
+            "severity":             severity,
+            "note": (
+                f"단위 불일치 감지: {issue} → unit_switch"
+                if mixed else "단위 일관성 정상"
+            ),
+        }
+
+    @staticmethod
+    def check_cumulative_vs_period(
+        values: list[float],
+        x_labels: list[str] = None,
+        declared_type: str = "period",
+    ) -> dict:
+        """
+        누적 데이터를 기간 데이터처럼 표시(또는 반대)하여 성장을 과장하는지 탐지.
+
+        탐지 패턴:
+          1. 값이 단조 증가(감소 없음)인데 기간 데이터로 선언 → 누적 의심
+          2. 평균 변화량이 총계의 20% 미만 → 누적 데이터 특성
+          3. 연속적인 값이 합산 가능하지 않음에도 누적 표시 사용
+        """
+        vals = [v for v in (values or []) if isinstance(v, (int, float))]
+        if len(vals) < 3:
+            return {"checked": False, "note": "데이터 부족 (최소 3개 필요)"}
+
+        n = len(vals)
+
+        # ── 단조성 판정 ───────────────────────────────────────
+        decreases       = sum(1 for i in range(n - 1) if vals[i + 1] < vals[i])
+        increases       = sum(1 for i in range(n - 1) if vals[i + 1] > vals[i])
+        decrease_ratio  = decreases / (n - 1)
+        non_decreasing  = decreases == 0
+        non_increasing  = increases == 0
+        monotonic       = non_decreasing or non_increasing
+
+        # ── 변화량 분석 ───────────────────────────────────────
+        deltas = [abs(vals[i + 1] - vals[i]) for i in range(n - 1)]
+        avg_delta = sum(deltas) / len(deltas) if deltas else 0
+        final_val = vals[-1] if vals[-1] != 0 else 1.0
+        delta_to_total = avg_delta / abs(final_val) if final_val != 0 else 0
+
+        # ── 누적 가능성 점수 (0 ~ 1.0) ──────────────────────
+        score = 0.0
+        if non_decreasing:                    score += 0.50  # 한 번도 감소 안 함
+        elif decrease_ratio < 0.15:           score += 0.25  # 거의 감소 없음
+        if delta_to_total < 0.20:             score += 0.30  # 변화량이 총계 대비 소
+        if vals[0] >= 0 and non_decreasing:   score += 0.20  # 0 이상에서 단조 증가
+
+        looks_cumulative = score >= 0.70
+
+        # ── declared_type과 비교 → 오류 판정 ─────────────────
+        if declared_type == "period" and looks_cumulative:
+            misleading = True
+            issue = (
+                "기간(period) 데이터로 표시됐지만 누적 패턴 강하게 의심 "
+                "→ cumulative_misrepresentation"
+            )
+        elif declared_type == "cumulative" and not looks_cumulative:
+            misleading = True
+            issue = "누적 데이터로 표시됐지만 기간 데이터 패턴"
+        else:
+            misleading = False
+            issue = ""
+
+        # 급격한 성장률 일관성 체크 — 누적이면 구간별 성장률이 감소하는 경향
+        growth_rates = []
+        for i in range(n - 1):
+            if vals[i] != 0:
+                growth_rates.append((vals[i + 1] - vals[i]) / abs(vals[i]))
+        avg_growth = sum(growth_rates) / len(growth_rates) if growth_rates else 0
+
+        severity = (
+            "높음" if (misleading and score >= 0.80)
+            else "중간" if misleading
+            else "정상"
+        )
+
+        return {
+            "misleading":           misleading,
+            "declared_type":        declared_type,
+            "looks_cumulative":     looks_cumulative,
+            "cumulative_score":     round(score, 2),
+            "is_monotonic":         monotonic,
+            "decrease_ratio":       round(decrease_ratio, 2),
+            "delta_to_total_ratio": round(delta_to_total, 3),
+            "avg_period_growth_rate": round(avg_growth, 4),
+            "severity":             severity,
+            "note": (
+                issue if misleading
+                else (
+                    f"정상 ({declared_type} 패턴 확인, "
+                    f"누적 점수:{score:.1f}, 감소 비율:{decrease_ratio:.0%})"
+                )
             ),
         }
 
