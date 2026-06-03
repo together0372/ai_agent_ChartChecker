@@ -1,12 +1,12 @@
-console.log("🚀 ChartQuiz MVP 모드 로드 완료!");
 const observed = new Set();
 
+// 💡 1. 백그라운드 서버와 통신하는 함수 (실수로 빠졌던 부분 복구!)
 function sendToServer(imageUrl, imgElement, loadingUI, wrapper) {
     chrome.runtime.sendMessage({
         action: "analyze",
         data: { url: imageUrl, page: location.href, site: location.hostname }
     }, (response) => {
-        // Mock 서버의 답장이 오면 무조건 배지 삭제
+        // 서버의 답장이 오면 배지 삭제
         if (loadingUI) loadingUI.remove();
 
         if (chrome.runtime.lastError) {
@@ -14,52 +14,72 @@ function sendToServer(imageUrl, imgElement, loadingUI, wrapper) {
             return;
         }
 
-        // 왜곡된 타겟 차트라면 UI 호출 (ui.js에 있는 함수 사용)
+        // 왜곡된 타겟 차트라면 퀴즈 팝업 UI 호출
         if (response && response.is_misleading === true) {
-            showQuizOverlay(imgElement, response, wrapper);
+            if (typeof showQuizOverlay === "function") {
+                showQuizOverlay(imgElement, response, wrapper);
+            } else {
+                console.error("🚨 showQuizOverlay 함수를 찾을 수 없습니다 (ui.js 확인 필요).");
+            }
         }
     });
 }
 
-// ✅ 이미지를 실제로 검사하고 뱃지를 붙이는 전담 함수
+// 💡 2. 스크롤 감지기 (Intersection Observer) 설정
+const observerOptions = {
+    root: null,
+    rootMargin: '0px',
+    threshold: 0.2 // 이미지가 화면에 20% 이상 보일 때 작동!
+};
+
+const imageObserver = new IntersectionObserver((entries, observer) => {
+    entries.forEach(entry => {
+        if (entry.isIntersecting) {
+            const img = entry.target;
+            
+            // 한 번 감지했으니 더 이상 감시하지 않음
+            observer.unobserve(img);
+            
+            console.log("👀 스크롤 감지! 화면에 등장:", img.src);
+            
+            // ui.js의 함수를 가져와서 뱃지 부착
+            const wrapper = wrapImageForUI(img);
+            const loadingUI = createLoadingOverlay();
+            wrapper.appendChild(loadingUI);
+            
+            // 서버로 전송하고 5초/10초 타이머 시작!
+            sendToServer(img.dataset.normalizedSrc, img, loadingUI, wrapper);
+        }
+    });
+}, observerOptions);
+
 function processImage(img) {
     const src = img.src || img.dataset.src || img.getAttribute("data-src");
     if (!src) return;
 
-    // URL이나 클래스에 'thumb', 'sns' 등이 있어도 정상 차트일 수 있으니 필터 대폭 완화!
     const imgClass = (img.className || "").toLowerCase();
     const srcLower = src.toLowerCase();
-    const adKeywords = ['icon', 'logo', 'btn']; // 확실한 것만 놔두고 전부 제거
+    const adKeywords = ['icon', 'logo', 'btn']; 
     if (adKeywords.some(keyword => imgClass.includes(keyword) || srcLower.includes(keyword))) return;
 
     const normalized = src;
     if (observed.has(normalized)) return;
 
-    // 💡 핵심: 이제 이미지가 로드된 상태이므로 정확한 width/height 측정이 가능함!
     if (img.width < 100 || img.height < 100) return;
 
     observed.add(normalized);
-    console.log("✅ 이미지 정찰 완료:", normalized);
+    img.dataset.normalizedSrc = normalized;
     
-    // ui.js의 함수를 가져와서 뱃지 부착
-    const wrapper = wrapImageForUI(img);
-    const loadingUI = createLoadingOverlay();
-    wrapper.appendChild(loadingUI);
-    
-    sendToServer(normalized, img, loadingUI, wrapper);
+    // 이미지를 관찰 대상에 추가
+    imageObserver.observe(img);
 }
 
-// ✅ 문서를 뒤져서 이미지 수집 시작 (로딩 대기 로직 추가)
 function collectImages() {
-    // 복잡한 컨테이너 조건 다 지우고, 페이지 전체 이미지를 싹 다 검사!
     const imgs = document.querySelectorAll("img");
-
     imgs.forEach(img => {
         if (img.complete) {
-            // 이미 다운로드가 끝나서 화면에 보인다면 즉시 처리
             processImage(img);
         } else {
-            // 아직 다운로드 중이라면, 다 그려진 직후(load)에 처리하도록 예약!
             img.addEventListener('load', () => processImage(img));
         }
     });
@@ -67,8 +87,8 @@ function collectImages() {
 
 function main() {
     collectImages();
-    const observer = new MutationObserver(() => collectImages());
-    observer.observe(document.body, { childList: true, subtree: true });
+    const mutationObserver = new MutationObserver(() => collectImages());
+    mutationObserver.observe(document.body, { childList: true, subtree: true });
 }
 
 main();
