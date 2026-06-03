@@ -1,0 +1,28 @@
+{
+  "manifest_version": 3,
+  "name": "ChartQuiz Demo",
+  "version": "1.0",
+  "description": "User Study MVP Version",
+  "background": {
+    "service_worker": "background.js",
+    "type": "module"
+  },
+  "content_scripts": [
+    {
+      "matches": [
+        "*://*.donga.com/*",
+        "*://*.sbs.co.kr/*",
+        "*://*.kbs.co.kr/*",
+        "*://*.bigkinds.or.kr/*",
+        "*://*.g-enews.com/*",
+        "*://*.news1.kr/*",
+        "*://*.kmib.co.kr/*",
+        "*://kmib.co.kr/*",    
+        "*://*.tlnews.co.kr/*",
+        "*://tlnews.co.kr/*"   
+      ],
+      "js": ["ui.js", "content.js"]
+    }
+  ],
+  "permissions": ["activeTab", "scripting"]
+}

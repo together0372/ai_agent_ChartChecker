@@ -1,0 +1,165 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>HCI News - User Study Portal</title>
+    <style>
+        * { box-sizing: border-box; margin: 0; padding: 0; }
+        body { font-family: 'Noto Sans KR', sans-serif; background-color: #f5f6fa; color: #2f3640; padding: 20px; }
+        
+        header { text-align: center; padding: 15px 0; margin-bottom: 20px; background: white; border-radius: 12px; box-shadow: 0 4px 10px rgba(0,0,0,0.05); }
+        header h1 { font-size: 28px; color: #1e3799; letter-spacing: 1px; }
+        header p { font-size: 13px; color: #7f8c8d; margin-top: 5px; }
+
+        /* 🔥 6분할 화면을 위한 그리드 설정 (스크롤 가능하게 높이 조정) */
+        .news-container { 
+            display: grid; 
+            grid-template-columns: 1fr 1fr; /* 가로 2칸 */
+            gap: 20px; 
+            /* height: calc(100vh - 120px); <-- 이 줄을 지우거나 주석 처리하세요! */
+            padding-bottom: 30px; 
+        }
+
+        .news-card { 
+            background: white; 
+            border-radius: 12px; 
+            padding: 20px; 
+            box-shadow: 0 4px 15px rgba(0,0,0,0.05); 
+            display: flex; 
+            flex-direction: column; 
+            overflow: hidden; 
+        }
+        
+        .badge { display: inline-block; width: fit-content; padding: 4px 8px; font-size: 11px; font-weight: bold; border-radius: 4px; color: white; margin-bottom: 10px; }
+        .badge.economy { background: #e67e22; }
+        .badge.tech { background: #9b59b6; }
+        .badge.society { background: #34495e; }
+
+        .news-title { font-size: 18px; font-weight: bold; margin-bottom: 10px; line-height: 1.4; word-break: keep-all; }
+        .news-content { font-size: 13px; color: #718093; line-height: 1.5; margin-bottom: 15px; overflow-y: auto; flex-grow: 1; padding-right: 5px; }
+        
+        /* 차트 이미지 배치 영역 */
+        .chart-box { text-align: center; background: #f8f9fa; border-radius: 8px; padding: 10px; display: flex; justify-content: center; align-items: center; }
+        .chart-box img { max-width: 100%; max-height: 200px; object-fit: contain; border-radius: 4px; }
+        /* 🔗 원본 기사 보기 링크 스타일 추가 */
+        .read-more { 
+            display: inline-block; 
+            margin-top: auto; /* 카드 맨 아래로 밀어내기 */
+            padding-top: 15px;
+            font-size: 13px; 
+            font-weight: bold; 
+            color: #1e3799; 
+            text-decoration: none; 
+            transition: color 0.2s;
+        }
+        .read-more:hover { 
+            color: #ff4757; 
+            text-decoration: underline; 
+        }
+    </style>
+</head>
+<body>
+
+    <header>
+        <h1>📰 HCI News</h1>
+    </header>
+
+    <div class="news-container">
+
+        <div class="news-card">
+            <span class="badge economy">경제</span>
+            <div class="news-title">재정 쏟아붓고도 2.0% '턱걸이'... 구조적 위기 드러난 성적표</div>
+            <div class="news-content">
+                지난해 한국 경제성장률이 국내외 주요 기관들의 전망치에 가깝게 근접하며 대외 충격 속에서 선방했다는 평가가 나온다. 그러나 속내를 들여다보면 상황은 복잡하다. 정부가 막대한 재정을 투입했음에도 불구하고 민간 부문의 자생적 성장 동력이 급격히 약화되고 있음을 보여주는 지표들이 속속 드러나고 있기 때문이다. 아래 차트 추세를 살펴보면 향후 성장 궤적에 대한 우려가 깊어진다.
+            </div>
+            <div class="chart-box">
+                <img src="https://dimg.donga.com/wps/NEWS/IMAGE/2020/01/22/99360936.2.jpg" alt="경제성장률 역순 차트">
+            </div>
+            <a href="https://www.donga.com/news/Economy/article/all/20200122/99361032/1" target="_blank" class="read-more">
+                🔗 원본 기사 보기 ↗
+            </a>
+        </div>
+
+        <div class="news-card">
+            <span class="badge economy">경제</span>
+            
+            <div class="news-title">4월 생산·소비·투자 '트리플 감소'… 중동전쟁 여파 본격화</div>
+            
+            <div class="news-content">
+                지난달 생산·소비·투자 등 주요 산업활동 지표가 일제히 마이너스를 기록하며 8개월 만에 '트리플 감소'를 보였다. 지난 2월 발발한 중동전쟁의 여파로 원유 수급 차질 등이 빚어지며 실물 경제 지표에 본격적인 타격을 주고 있는 것으로 분석된다. 다만 전년 동월 대비로는 전반적인 플러스 흐름을 유지하고 있다.
+            </div>
+            
+            <div class="chart-box">
+                <img src="https://www.bigkinds.or.kr/resources/images/04100078/2026/05/29/04100078.20260529085421001.01.jpg" alt="산업활동동향 차트">
+            </div>
+            
+            <a href="https://www.bigkinds.or.kr/v2/news/newsDetailView.do?newsId=04100078.20260529085421001" target="_blank" class="read-more">
+                🔗 원본 기사 보기 ↗
+            </a>
+        </div>
+
+        <div class="news-card">
+            <span class="badge society">사회/정치</span>
+            <div class="news-title">[그래픽] 6·3 지방선거 지역별 사전투표율</div>
+            <div class="news-content">
+                제9회 전국동시지방선거 사전투표 둘째 날인 30일 오후 6시 기준 전국 투표율은 23.51%로 집계됐다. 중앙선거관리위원회에 따르면 전국 유권자 약 4464만 명 중 1049만 명이 투표에 참여했으며, 이는 역대 지방선거 사전투표 최고치였던 2022년(20.62%)보다 2.89%p 높은 수치다. 지역별로는 전남이 38.95%로 가장 높았고, 대구가 18.65%로 가장 낮았다.
+            </div>
+            <div class="chart-box">
+                <img src="https://image.news1.kr/system/photos/2026/5/30/7933775/high.jpg" alt="사전투표율 차트">
+            </div>
+            <a href="https://www.news1.kr/photos/7933775" target="_blank" class="read-more">
+                🔗 원본 기사 보기 ↗
+            </a>
+        </div>
+
+        <div class="news-card">
+            <span class="badge economy">경제/증권</span>
+            <div class="news-title">삼성전자·SK하이닉스, 합산 시총 '2000조원' 향해 질주</div>
+            <div class="news-content">
+                삼성전자와 SK하이닉스로 대표되는 국내 반도체 ‘투톱’의 시가총액이 1800조원을 넘어서며 코스피 전체 시가총액 비중의 40%에 근접했다. 한국거래소에 따르면 두 기업의 합산 시가총액은 약 6주 만에 486조원 증가했다. 이번 랠리는 단순한 기대감이 아닌 인공지능(AI) 인프라 투자 확대에 따른 실적 급증이 확인되며 밸류에이션 자체가 재평가되는 국면에 가깝다.
+            </div>
+            <div class="chart-box">
+                <img src="https://nimage.g-enews.com/phpwas/restmb_allidxmake.php?idx=5&simg=2026021814220807758edf69f862c10625224987.jpg" alt="반도체 투톱 시가총액 차트">
+            </div>
+            <a href="https://www.g-enews.com/article/Securities/2026/02/202602181348363038edf69f862c_1" target="_blank" class="read-more">
+                🔗 원본 기사 보기 ↗
+            </a>
+        </div>
+
+        <!-- 🚨 5번 구역: 국민일보 지지율 차트 (왜곡 - 축 절단) -->
+        <div class="news-card">
+            <span class="badge society">정치</span>
+            <div class="news-title">문재인 대통령 지지율 ‘이상 조짐’… 북한發 하락세 뚜렷</div>
+            <div class="news-content">
+                한국갤럽 여론조사 결과, 문 대통령의 지지율이 전주 대비 4%p 하락한 72%를 기록했다. 취임 초기 84%에 비하면 12%p 떨어진 수치다. 북핵 등 대북·안보 이슈에 대한 대응 미숙이 주요 하락 원인으로 꼽히며, 정부 실책이 반복될 경우 본격적인 조정 국면에 돌입할 수 있다는 우려가 나온다.
+            </div>
+            <div class="chart-box">
+                <!-- 🎯 키워드 'kmib_moon_rating' 매칭 -->
+                <img src="https://image.kmib.co.kr/online_image/2017/0908/201709082334_11120923813493_1.jpg" alt="지지율 하락 차트">
+            </div>
+            <a href="https://kmib.co.kr/article/view.asp?arcid=0923813493" target="_blank" class="read-more">
+                🔗 원본 기사 보기 ↗
+            </a>
+        </div>
+
+        <!-- 🚨 6번 구역: 외국인 관광객 쇼핑 차트 (왜곡 - 3D 비율 오류) -->
+        <div class="news-card">
+            <span class="badge economy">경제/유통</span>
+            <div class="news-title">[여행 랭킹] 외국인 관광객 구매 품목 TOP 5</div>
+            <div class="news-content">
+                외국인 관광객의 한국 내 소비 통계에 따르면, 화장품이 연간 약 7조~8조 원 규모로 전체 면세점 매출의 절반 이상을 차지하며 압도적 1위를 기록했다. 이어 가방과 패션(2조~3조 원), 담배(약 1조 원) 순으로 나타났다. 특정 품목에 대한 소비 집중 현상이 수년째 뚜렷하게 관찰되고 있다.
+            </div>
+            <div class="chart-box">
+                <!-- 🎯 키워드 'tlnews_shopping' 매칭 -->
+                <img src="https://cdn.tlnews.co.kr/news/photo/202603/14907_15803_210.jpg" alt="관광객 소비 차트">
+            </div>
+            <a href="https://www.tlnews.co.kr/news/articleView.html?idxno=14907" target="_blank" class="read-more">
+                🔗 원본 기사 보기 ↗
+            </a>
+        </div>
+
+    </div>
+
+</body>
+</html>
