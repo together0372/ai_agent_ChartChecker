@@ -1,0 +1,7 @@
+{
+  "embed_model": "sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2",
+  "content_schema": "v2-taxonomy-enriched",
+  "count": 2603,
+  "source": "real",
+  "built_at": "2026-06-03T18:10:13.668882"
+}

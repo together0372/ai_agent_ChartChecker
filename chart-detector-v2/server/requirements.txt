@@ -1,0 +1,31 @@
+# ── 서버 프레임워크 ──────────────────────────────────────────
+fastapi
+uvicorn
+pydantic
+python-multipart
+requests
+
+# ── CNN 차트 분류기 ───────────────────────────────────────────
+# CPU-only 설치:
+#   pip install torch torchvision --index-url https://download.pytorch.org/whl/cpu
+torch
+torchvision
+pillow
+
+# ── OpenCV (이미지 크기 체크 등) ─────────────────────────────
+opencv-python
+numpy
+
+# ── LLM / LangGraph (멀티에이전트 핵심) ─────────────────────
+langchain-core
+langchain-ollama
+langgraph
+
+# ── RAG (MisViz 벡터DB) ──────────────────────────────────────
+# USE_VECTOR_DB=True 일 때만 필요
+langchain-chroma
+langchain-huggingface
+sentence-transformers
+chromadb
+datasets
+huggingface-hub
