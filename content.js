@@ -1,25 +1,45 @@
 const observed = new Set();
+let activeAnalysisCount = 0; // 💡 동시에 분석 중인 차트 개수를 세는 글로벌 카운터
 
-// 💡 1. 백그라운드 서버와 통신하는 함수 (실수로 빠졌던 부분 복구!)
+// 💡 1. 백그라운드 서버와 통신하는 함수
 function sendToServer(imageUrl, imgElement, loadingUI, wrapper) {
     chrome.runtime.sendMessage({
         action: "analyze",
         data: { url: imageUrl, page: location.href, site: location.hostname }
     }, (response) => {
-        // 서버의 답장이 오면 배지 삭제
         if (loadingUI) loadingUI.remove();
+
+        // 답장이 올 때마다 분석 중인 카운트 감소
+        activeAnalysisCount--;
 
         if (chrome.runtime.lastError) {
             console.error("🚨 통신 에러:", chrome.runtime.lastError.message);
+            if (activeAnalysisCount <= 0) {
+                activeAnalysisCount = 0;
+                updateFloatingWidget('silent');
+            }
             return;
         }
 
-        // 왜곡된 타겟 차트라면 퀴즈 팝업 UI 호출
         if (response && response.is_misleading === true) {
+            // 🚨 왜곡 차트 감지 시 즉시 경고 띄움
+            updateFloatingWidget('warning', imgElement);
+            
             if (typeof showQuizOverlay === "function") {
                 showQuizOverlay(imgElement, response, wrapper);
-            } else {
-                console.error("🚨 showQuizOverlay 함수를 찾을 수 없습니다 (ui.js 확인 필요).");
+            }
+            
+            // 사용자가 퀴즈 내부의 버튼(O/X)을 누르는 순간 강제 침묵 모드로 전환
+            wrapper.addEventListener('click', function(event) {
+                if (event.target.closest('button')) {
+                    updateFloatingWidget('force_silent');
+                }
+            }, { once: true });
+        } else {
+            // ✅ 정상 차트의 경우, 현재 분석 중인 다른 차트가 아예 없을 때만 말풍선을 닫음
+            if (activeAnalysisCount <= 0) {
+                activeAnalysisCount = 0;
+                updateFloatingWidget('silent');
             }
         }
     });
@@ -29,25 +49,23 @@ function sendToServer(imageUrl, imgElement, loadingUI, wrapper) {
 const observerOptions = {
     root: null,
     rootMargin: '0px',
-    threshold: 0.2 // 이미지가 화면에 20% 이상 보일 때 작동!
+    threshold: 0.2
 };
 
 const imageObserver = new IntersectionObserver((entries, observer) => {
     entries.forEach(entry => {
         if (entry.isIntersecting) {
             const img = entry.target;
-            
-            // 한 번 감지했으니 더 이상 감시하지 않음
             observer.unobserve(img);
             
-            console.log("👀 스크롤 감지! 화면에 등장:", img.src);
-            
-            // ui.js의 함수를 가져와서 뱃지 부착
             const wrapper = wrapImageForUI(img);
             const loadingUI = createLoadingOverlay();
             wrapper.appendChild(loadingUI);
             
-            // 서버로 전송하고 5초/10초 타이머 시작!
+            // 🚀 새로운 차트 감지 시 카운트 증가 및 분석 중 상태 호출
+            activeAnalysisCount++;
+            updateFloatingWidget('analyzing');
+            
             sendToServer(img.dataset.normalizedSrc, img, loadingUI, wrapper);
         }
     });
@@ -69,8 +87,6 @@ function processImage(img) {
 
     observed.add(normalized);
     img.dataset.normalizedSrc = normalized;
-    
-    // 이미지를 관찰 대상에 추가
     imageObserver.observe(img);
 }
 
@@ -86,6 +102,10 @@ function collectImages() {
 }
 
 function main() {
+    if (typeof createFloatingWidget === "function") {
+        createFloatingWidget();
+    }
+    
     collectImages();
     const mutationObserver = new MutationObserver(() => collectImages());
     mutationObserver.observe(document.body, { childList: true, subtree: true });
