@@ -117,3 +117,107 @@ function showQuizOverlay(imgElement, quizData, wrapper) {
     quizOverlay.querySelector('#btn-o').onclick = () => handleAnswer("O");
     quizOverlay.querySelector('#btn-x').onclick = () => handleAnswer("X");
 }
+
+// ==========================================
+// 🤖 둥둥 떠다니는 AI 에이전트 위젯 생성 및 상태 관리
+// ==========================================
+
+function createFloatingWidget() {
+    if (document.getElementById('chartquiz-floating-widget')) return;
+
+    const widget = document.createElement('div');
+    widget.id = 'chartquiz-floating-widget';
+    widget.dataset.state = 'silent'; // 💡 현재 상태를 기억할 숨겨진 태그 추가
+    
+    widget.style.cssText = `
+        position: fixed;
+        right: 20px;
+        bottom: 20px;
+        z-index: 999999;
+        display: flex;
+        align-items: flex-end;
+        gap: 10px;
+        font-family: 'Noto Sans KR', sans-serif;
+        pointer-events: none;
+    `;
+
+    widget.innerHTML = `
+        <div id="chartquiz-bubble" style="
+            background: #2c3e50;
+            color: white;
+            padding: 10px 15px;
+            border-radius: 12px;
+            font-size: 13px;
+            font-weight: bold;
+            box-shadow: 0 4px 10px rgba(0,0,0,0.2);
+            transition: all 0.3s ease;
+            opacity: 0.9;
+            display: none;
+        "></div>
+        <div id="chartquiz-bot" style="
+            font-size: 35px;
+            background: white;
+            border-radius: 50%;
+            box-shadow: 0 4px 10px rgba(0,0,0,0.2);
+            padding: 5px;
+            transition: transform 0.3s;
+        ">🤖</div>
+    `;
+
+    document.body.appendChild(widget);
+}
+
+function updateFloatingWidget(state, imgElement = null) {
+    const widget = document.getElementById('chartquiz-floating-widget');
+    if (!widget) return;
+    
+    const bubble = document.getElementById('chartquiz-bubble');
+    const bot = document.getElementById('chartquiz-bot');
+    if (!bubble || !bot) return;
+
+    const currentState = widget.dataset.state; // 현재 상태 확인
+
+    if (state === 'analyzing') {
+        // 💡 이미 경고가 뜬 상태라면 다른 차트가 분석 중이어도 경고를 가리지 않음
+        if (currentState === 'warning') return;
+        
+        widget.dataset.state = 'analyzing';
+        bubble.innerText = "🤔 화면 내 차트를 분석하고 있습니다...";
+        bubble.style.background = "#f39c12";
+        bubble.style.display = 'flex';
+        bot.style.transform = "rotate(15deg) scale(1.1)";
+        
+    } else if (state === 'warning' && imgElement) {
+        // 🚨 경고 상태 강제 고정
+        widget.dataset.state = 'warning';
+        const rect = imgElement.getBoundingClientRect();
+        let direction = "이 화면에";
+        
+        if (rect.bottom < 0) {
+            direction = "화면 위쪽에 ⬆️";
+        } else if (rect.top > window.innerHeight) {
+            direction = "화면 아래쪽에 ⬇️";
+        }
+
+        bubble.innerText = `🚨 경고! ${direction} 왜곡된 차트 발견!`;
+        bubble.style.background = "#e74c3c";
+        bubble.style.display = 'flex';
+        bot.style.transform = "rotate(-15deg) scale(1.2)";
+        
+    } else if (state === 'silent') {
+        // 💡 일반적인 분석 완료 신호는 현재 켜져 있는 '경고'를 끌 수 없음
+        if (currentState === 'warning') return;
+        
+        widget.dataset.state = 'silent';
+        bubble.innerText = '';
+        bubble.style.display = 'none';
+        bot.style.transform = "rotate(0deg) scale(1)";
+        
+    } else if (state === 'force_silent') {
+        // 🎯 퀴즈 상호작용이 시작되었을 때만 경고를 강제로 해제
+        widget.dataset.state = 'silent';
+        bubble.innerText = '';
+        bubble.style.display = 'none';
+        bot.style.transform = "rotate(0deg) scale(1)";
+    }
+}
